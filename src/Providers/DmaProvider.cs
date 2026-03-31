@@ -1,4 +1,4 @@
-using vmmsharp;
+using Vmmsharp;
 using VrcDmaFish.Models;
 using VrcDmaFish.UI;
 
@@ -11,43 +11,41 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
     private ulong _targetObjectAddr;
     private readonly string _processName;
 
-    public DmaProvider(string processName)
-    {
+    public DmaProvider(string processName) {
         _processName = processName;
         Initialize();
     }
 
-    private void Initialize()
-    {
+    private void Initialize() {
         try {
             _vmm = new Vmm("-device", "fpga");
             if (_vmm.PidGetFromName(_processName, out _pid)) {
-                Logger.Info("DMA", $"已连接到 {_processName} (PID: {_pid})");
-                
-                // 启动自动导航雷达！
+                Logger.Info("DMA", $"Connected to {_processName} (PID: {_pid})");
                 var scanner = new UnityScanner(_vmm, _pid);
-                _targetObjectAddr = scanner.FindObjectByName("FishingLogic"); // 默认找钓鱼逻辑对象
-                
-                if (_targetObjectAddr == 0) {
-                    Logger.Warn("DMA", "未能自动定位到钓鱼对象，可能需要进入钓鱼区域喵！");
-                }
+                _targetObjectAddr = scanner.FindObjectByName("FishingLogic");
             }
         } catch (Exception ex) {
-            Logger.Error("DMA", $"初始化失败: {ex.Message}");
+            Logger.Error("DMA", $"Init failed: {ex.Message}");
         }
     }
 
-    public FishContext Read()
-    {
-        if (_vmm == null || _pid == 0 || _targetObjectAddr == 0) return new FishContext();
+    public FishContext Read() {
+        if (_vmm == null || _targetObjectAddr == 0) return new FishContext();
 
-        // 到这一步，主人只需要根据 _targetObjectAddr 往里偏移去读 Udon 变量就行了喵！
-        // 比如: [targetObjectAddr + ComponentOffset] -> [UdonBehavior] -> [PublicVariables]
-        
-        return new FishContext {
-            IsHooked = false, // 待主人补全读取逻辑喵
-            Tension = 0.0f
-        };
+        // 此处需要主人根据 Il2CppDumper 得到的偏移来填空喵
+        // 目前先实现一个“如果雷达搜到对象，就尝试读取”的逻辑
+        try {
+            // 假设张力在 UdonBehaviour 偏移 0x40 处 (示例)
+            byte[] buffer = _vmm.MemRead(_pid, _targetObjectAddr + 0x40, 4, Vmm.FLAG_NOCACHE);
+            float tension = BitConverter.ToSingle(buffer, 0);
+
+            return new FishContext {
+                IsHooked = tension > 0.01f, // 只要有张力就视为上钩 (示例逻辑)
+                Tension = tension
+            };
+        } catch {
+            return new FishContext();
+        }
     }
 
     public void ResetCycle() { }

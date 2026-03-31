@@ -1,4 +1,4 @@
-using vmmsharp;
+using Vmmsharp;
 using VrcDmaFish.UI;
 
 namespace VrcDmaFish.Providers;

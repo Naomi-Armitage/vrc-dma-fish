@@ -1,66 +1,44 @@
 $ProgressPreference = 'SilentlyContinue'
-$TargetDir = "bin/Debug/net8.0"
+$TargetDirs = @("bin/Debug/net8.0", "bin/Release/net8.0", ".")
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-if (!(Test-Path $TargetDir)) {
-    New-Item -ItemType Directory -Force -Path $TargetDir
-}
+Write-Host "--- VrcDmaFish Setup: Pro Version ---" -ForegroundColor Cyan
 
-Write-Host "--- VrcDmaFish Setup: Intelligent Mode ---" -ForegroundColor Cyan
+$GithubUrl = "https://github.com/ufrisk/MemProcFS/releases/download/v5.17/MemProcFS_files_and_binaries-win_x64-latest.zip"
+$ZipFile = "memprocfs.zip"
+$Success = $false
 
-# 1. 检测地理位置喵
-Write-Host "Detecting location..." -ForegroundColor Yellow
+# 智能地域检测 (由于主人反馈镜像坏了，咱们改为先尝试直连喵)
 $IsChina = $false
 try {
-    $ipInfo = Invoke-RestMethod -Uri "http://ip-api.com/json/" -TimeoutSec 5
-    if ($ipInfo.countryCode -eq "CN") {
-        $IsChina = $true
-        Write-Host "Location: Domestic (CN). Using mirror..." -ForegroundColor Green
-    } else {
-        Write-Host "Location: Overseas ($($ipInfo.countryCode)). Using direct link..." -ForegroundColor Green
-    }
-} catch {
-    Write-Host "Location detection failed, defaulting to direct link..." -ForegroundColor Gray
+    $ip = Invoke-RestMethod -Uri "http://ip-api.com/json/" -TimeoutSec 3
+    if ($ip.countryCode -eq "CN") { $IsChina = $true }
+} catch {}
+
+$Urls = if ($IsChina) { @("https://ghp.ci/" + $GithubUrl, $GithubUrl) } else { @($GithubUrl) }
+
+foreach ($url in $Urls) {
+    Write-Host "Downloading from: $url" -ForegroundColor Yellow
+    try {
+        Invoke-WebRequest -Uri $url -OutFile $ZipFile -TimeoutSec 120
+        if (Test-Path $ZipFile) { $Success = $true; break }
+    } catch { Write-Host "Link failed, retrying..." -ForegroundColor Gray }
 }
 
-# 2. 准备主人指定的最新链接喵
-$BaseUrl = "https://github.com/ufrisk/MemProcFS/releases/download/v5.17/MemProcFS_files_and_binaries-win_x64-latest.zip"
-$DownloadUrl = $BaseUrl
+if (-not $Success) { Write-Host "Download failed!" -ForegroundColor Red; return }
 
-if ($IsChina) {
-    $DownloadUrl = "https://mirror.ghproxy.com/" + $BaseUrl
-}
-
-$ZipFile = "memprocfs.zip"
-
-# 3. 下载喵
-Write-Host "Downloading from: $DownloadUrl" -ForegroundColor Yellow
-try {
-    Invoke-WebRequest -Uri $DownloadUrl -OutFile $ZipFile -TimeoutSec 120
-} catch {
-    Write-Host "Download failed! Please check your network or URL." -ForegroundColor Red
-    return
-}
-
-# 4. 部署文件喵
-Write-Host "Extracting files..." -ForegroundColor Yellow
-if (Test-Path "temp_mem") { Remove-Item -Recurse -Force "temp_mem" }
+Write-Host "Deploying to all output directories..." -ForegroundColor Yellow
 Expand-Archive -Path $ZipFile -DestinationPath "temp_mem" -Force
+$Dlls = Get-ChildItem -Path "temp_mem" -Recurse -Include "vmm.dll","leechcore.dll","FTD3XX.dll","FTD601.dll","info.db"
 
-$FilesToCopy = @("vmm.dll", "leechcore.dll", "FTD3XX.dll", "FTD601.dll", "info.db")
-# 递归搜索所有子目录，防止 ZIP 内部结构变化喵
-$allFiles = Get-ChildItem -Path "temp_mem" -Recurse
-
-foreach ($file in $FilesToCopy) {
-    $found = $allFiles | Where-Object { $_.Name -eq $file } | Select-Object -First 1
-    if ($found) {
-        Copy-Item $found.FullName -Destination $TargetDir -Force
-        Write-Host "[OK] Deployed: $file" -ForegroundColor Green
+foreach ($dir in $TargetDirs) {
+    if (!(Test-Path $dir)) { New-Item -ItemType Directory -Force -Path $dir }
+    foreach ($dll in $Dlls) {
+        Copy-Item $dll.FullName -Destination $dir -Force
     }
+    Write-Host "[OK] Deployed to: $dir" -ForegroundColor Green
 }
 
 Remove-Item $ZipFile -Force
 Remove-Item -Recurse -Force "temp_mem"
-
-Write-Host ""
-Write-Host "Setup finished successfully! High-speed DMA ready." -ForegroundColor Cyan
+Write-Host "Done! (≧▽≦)ゞ" -ForegroundColor Cyan
