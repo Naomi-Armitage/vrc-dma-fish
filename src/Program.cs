@@ -1,4 +1,5 @@
 using System.Text.Json;
+using VrcDmaFish.Inputs;
 
 namespace VrcDmaFish;
 
@@ -6,14 +7,22 @@ public static class Program
 {
     public static void Main(string[] args)
     {
-        Console.WriteLine("Ciallo~ VrcDmaFish safe prototype starting");
+        Console.WriteLine("Ciallo~ VrcDmaFish multi-input version starting! (∠・ω< )⌒★");
 
         var config = LoadConfig();
-        Logger.Info("APP", $"TickIntervalMs={config.TickIntervalMs}");
+        
+        IInputController input = config.Input.Type.ToLower() switch
+        {
+            "serial" => new SerialKmboxController(config.Input.ComPort),
+            "net" => new NetKmboxController(config.Input.NetIp, config.Input.NetPort),
+            "mock" => new ConsoleInputController(),
+            _ => throw new ArgumentException("Unknown input type喵!")
+        };
 
         IFishSignalSource signalSource = new MockFishSignalSource();
-        IInputController input = new ConsoleInputController();
         var bot = new FishingBot(signalSource, input, config.Bot);
+
+        Logger.Info("APP", $"Controller [{config.Input.Type}] loaded. System ready.");
 
         while (true)
         {
@@ -25,26 +34,7 @@ public static class Program
     private static AppConfig LoadConfig()
     {
         const string path = "appsettings.json";
-        if (!File.Exists(path))
-        {
-            var cfg = new AppConfig();
-            SaveDefault(path, cfg);
-            return cfg;
-        }
-
-        var json = File.ReadAllText(path);
-        return JsonSerializer.Deserialize<AppConfig>(json, new JsonSerializerOptions
-        {
-            PropertyNameCaseInsensitive = true
-        }) ?? new AppConfig();
-    }
-
-    private static void SaveDefault(string path, AppConfig cfg)
-    {
-        var json = JsonSerializer.Serialize(cfg, new JsonSerializerOptions
-        {
-            WriteIndented = true
-        });
-        File.WriteAllText(path, json);
+        if (!File.Exists(path)) return new AppConfig();
+        return JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(path)) ?? new AppConfig();
     }
 }
