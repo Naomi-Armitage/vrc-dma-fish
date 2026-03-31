@@ -1,53 +1,91 @@
-# 🎣 VrcDmaFish (Safe Prototype)
+# VrcDmaFish
 
-Ciallo~ 这是一个基于 .NET 8.0 开发的 VRChat 自动钓鱼状态机原型喵！(∠・ω< )⌒★
+一个基于 .NET 8 的 VRChat 钓鱼状态机原型。
 
-本项目旨在演示如何通过有限状态机（FSM）逻辑实现钓鱼流程自动化。它采用了**解耦设计**，将信号读取（内存/视觉）与输入模拟（鼠标/硬件控制）完全分离，非常方便主人进行后续开发和自定义。
+当前仓库默认以 `Mock` 信号源运行，开箱即可做状态机和输入流程验证；DMA 读取保留为可选实验路径，只有在配置了目标地址和偏移后才会启用。
 
-## ✨ 功能特性
-- **六大状态流转**：包含 `Idle`, `Casting`, `Waiting`, `Hooked`, `Reeling`, `Cooldown`。
-- **动态张力控制**：内置张力（Tension）监测逻辑，当鱼线太紧时会自动停手防止断线。
-- **高度可配置**：所有时间参数、张力阈值、点击频率均可通过 `appsettings.json` 灵活调整。
-- **易于扩展**：
-  - 实现 `IFishSignalSource` 即可接入真实的 DMA 内存读取。
-  - 实现 `IInputController` 即可接入 Kmbox 或其他物理控制器。
-- **内置模拟器**：默认提供 `MockFishSignalSource`，无需打开游戏即可进行逻辑测试。
+## 当前特性
 
-## 🚀 快速开始
+- 默认可运行的模拟模式，不依赖游戏进程
+- 明确的状态流转：`Idle` -> `Casting` -> `Waiting` -> `Hooked` -> `Reeling` -> `Cooldown`
+- 使用暂停/恢复双阈值的张力控制，避免在阈值附近抖动
+- `appsettings.json` 配置加载，支持尾逗号和 JSON 注释
+- DMA 模式初始化失败时自动回退到 `Mock`，避免直接崩溃
 
-### 1. 环境准备
-确保你的机器上安装了 [.NET 8.0 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)。
+## 运行环境
 
-### 2. 获取代码并运行
+- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
+
+## 快速开始
+
 ```bash
-git clone <your-repo-url>
-cd vrc-dma-fish
-dotnet run
+dotnet run -- --ticks 80
 ```
 
-## 🛠️ 项目结构
-- `src/`：所有的 C# 源代码。
-- `VrcDmaFish.csproj`：项目工程文件。
-- `appsettings.json`：钓鱼逻辑配置文件。
-- `README.md`：你正在看的这份超可爱文档喵！
+`--ticks` 是可选参数，用来限制循环次数，方便做冒烟验证；不传时会持续运行，按 `Ctrl+C` 退出。
 
-## 📄 配置文件说明 (`appsettings.json`)
+## 配置说明
+
+默认配置文件是 `appsettings.json`。
+
 ```json
 {
-  "TickIntervalMs": 100,           // 逻辑轮询间隔（毫秒）
+  "TickIntervalMs": 100,
+  "Input": {
+    "Type": "Console"
+  },
+  "SignalSource": {
+    "Type": "Mock",
+    "ProcessName": "VRChat",
+    "TargetObjectName": "FishingLogic"
+  },
   "Bot": {
-    "CastDurationMs": 1200,        // 抛竿长按时间
-    "CooldownMs": 1500,            // 钓起后的冷却时间
-    "ReelTensionPauseThreshold": 0.8, // 停止收杆的张力上限
-    "ReelTensionResumeThreshold": 0.55, // 恢复收杆的张力下限
-    "ReelPulseMs": 80,             // 模拟点击时的按下时长
-    "ReelRestMs": 120              // 模拟点击时的抬起间隔
+    "CastDurationMs": 1200,
+    "CooldownMs": 1500,
+    "ReelTensionPauseThreshold": 0.8,
+    "ReelTensionResumeThreshold": 0.55,
+    "ReelPulseMs": 80,
+    "ReelRestMs": 120
   }
 }
 ```
 
-## ⚠️ 免责声明
-本项目仅供学习研究状态机设计之用。默认版本不包含任何侵入性代码。请在合法合规的前提下参考使用喵！
+### `SignalSource`
 
----
-Made with ❤️ by Naomi-Armitage and Taffy喵!
+- `Type`: `Mock` 或 `Dma`
+- `ProcessName`: DMA 模式下要附加的进程名
+- `TargetObjectName`: 自动扫描时尝试查找的对象名
+- `TargetObjectAddress`: 可选，支持十进制或 `0x` 十六进制；配置后会跳过自动扫描
+- `HookedOffset` / `CatchCompletedOffset` / `TensionOffset`: DMA 读取所需偏移，支持十进制或 `0x` 十六进制
+
+如果 `Type` 为 `Dma` 但地址或偏移不完整，程序会记录警告并回退到 `Mock`。
+
+## 安装 MemProcFS 原生库
+
+DMA 模式依赖 `vmm.dll`、`leechcore.dll` 等原生文件。可以运行：
+
+```powershell
+.\setup.ps1
+```
+
+脚本会下载 MemProcFS `v5.17` 的 Windows x64 压缩包，并把所需文件复制到已存在的 `bin/*/net8.0` 输出目录；如果目录还不存在，则默认复制到 `bin/Debug/net8.0`。
+
+也可以显式指定目标目录：
+
+```powershell
+.\setup.ps1 -TargetDir bin\Release\net8.0
+```
+
+## 项目结构
+
+- `src/Core`: 状态机
+- `src/Inputs`: 输入控制器
+- `src/Models`: 配置和上下文模型
+- `src/Providers`: 信号源实现
+- `src/UI`: 控制台输出
+
+## 现阶段限制
+
+- `ConsoleInputController` 只做日志输出，不会驱动真实硬件
+- `UnityScanner` 还没有可靠的自动签名扫描，DMA 最稳妥的方式仍然是手动提供目标地址
+- 仓库目前没有单元测试，建议每次改动后至少执行一次 `dotnet build` 和一次带 `--ticks` 的冒烟运行
