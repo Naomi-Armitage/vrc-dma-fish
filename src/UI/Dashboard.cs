@@ -11,49 +11,65 @@ public static class Dashboard
         return new Layout("Root")
             .SplitColumns(
                 new Layout("Left").Ratio(1),
-                new Layout("Right").Ratio(2)
-            );
+                new Layout("Right").Ratio(2));
     }
 
     public static void Update(Layout layout, FishingBot bot, AppConfig config)
     {
-        // --- 左侧：配置与状态面板 ---
         var statusTable = new Table().Border(TableBorder.Rounded).Expand();
-        statusTable.AddColumn("[cyan]参数[/]");
-        statusTable.AddColumn("[cyan]状态[/]");
-        statusTable.AddRow("控制器", $"[green]{config.Input.Type}[/]");
-        statusTable.AddRow("输入口", $"[yellow]{(config.Input.Type == "Serial" ? config.Input.ComPort : config.Input.NetIp)}[/]");
-        statusTable.AddRow("机器人状态", $"[bold yellow]{bot.State}[/]");
-        statusTable.AddRow("张力阈值", $"[grey]{config.Bot.ReelTensionPauseThreshold:P0}[/]");
+        statusTable.AddColumn("[cyan]Setting[/]");
+        statusTable.AddColumn("[cyan]Value[/]");
+        statusTable.AddRow("Input", $"[green]{config.Input.Type}[/]");
+        statusTable.AddRow("Endpoint", $"[yellow]{GetInputEndpoint(config)}[/]");
+        statusTable.AddRow("Signal", $"[green]{config.SignalSource.Type}[/]");
+        statusTable.AddRow("Bot state", $"[bold yellow]{bot.State}[/]");
+        statusTable.AddRow("Pause threshold", $"[grey]{config.Bot.ReelTensionPauseThreshold:P0}[/]");
+        statusTable.AddRow("Resume threshold", $"[grey]{config.Bot.ReelTensionResumeThreshold:P0}[/]");
 
         layout["Left"].Update(
             new Panel(statusTable)
-                .Header("[bold magenta] 系统信息 [/]")
-                .BorderColor(Color.Magenta)
-        );
+                .Header("[bold magenta] System [/]")
+                .BorderColor(Color.Magenta));
 
-        // --- 右侧：实时监控面板 ---
-        var tensionVal = bot.LastContext.Tension * 100;
-        var tensionColor = tensionVal > 80 ? Color.Red : (tensionVal > 50 ? Color.Yellow : Color.Green);
-        
-        // 动态进度条
+        var tensionVal = Math.Clamp(bot.LastContext.Tension, 0f, 1f) * 100;
+        var tensionColor = tensionVal > 80 ? Color.Red : tensionVal > 50 ? Color.Yellow : Color.Green;
+
         var bar = new BarChart()
             .Width(60)
-            .Label($"[bold]实时张力: {tensionVal:F1}%[/]")
+            .Label($"[bold]Live tension: {tensionVal:F1}%[/]")
             .AddItem("Tension", Math.Round(tensionVal), tensionColor);
 
-        var hookStatus = bot.LastContext.IsHooked 
-            ? "[blink bold red]!!! FISH HOOKED !!![/]" 
+        var hookStatus = bot.LastContext.IsHooked
+            ? "[bold red]Fish hooked[/]"
             : "[grey]Waiting for bite...[/]";
 
         layout["Right"].Update(
             new Panel(
                 new Rows(
-                    new Padder(new Text(hookStatus).Centered(), new Padding(0, 1)),
-                    bar
-                )
-            ).Header("[bold cyan] 实时监控 [/]")
-            .BorderColor(Color.Cyan1)
-        );
+                    new Padder(new Markup(hookStatus).Centered(), new Padding(0, 1)),
+                    bar))
+                .Header("[bold cyan] Live Monitor [/]")
+                .BorderColor(Color.Cyan1));
+    }
+
+    public static void Render(FishingBot bot, AppConfig config)
+    {
+        AnsiConsole.MarkupLine(
+            $"[cyan]State:[/] {bot.State} | [cyan]Tension:[/] {Math.Clamp(bot.LastContext.Tension, 0f, 1f):P1} | [cyan]Input:[/] {config.Input.Type} | [cyan]Signal:[/] {config.SignalSource.Type}");
+    }
+
+    private static string GetInputEndpoint(AppConfig config)
+    {
+        if (string.Equals(config.Input.Type, "Serial", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"{config.Input.ComPort} @ {config.Input.BaudRate}";
+        }
+
+        if (string.Equals(config.Input.Type, "Net", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"{config.Input.NetIp}:{config.Input.NetPort}";
+        }
+
+        return config.Input.Type;
     }
 }

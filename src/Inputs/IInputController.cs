@@ -1,5 +1,7 @@
 namespace VrcDmaFish.Inputs;
-public interface IInputController {
+
+public interface IInputController : IDisposable
+{
     void BeginCast();
     void EndCast();
     void ReelPulse(int durationMs);

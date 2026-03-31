@@ -1,83 +1,128 @@
-#pragma warning disable CA1416
+using System.Runtime.Versioning;
+using System.Text;
 using Vmmsharp;
 using VrcDmaFish.UI;
 
 namespace VrcDmaFish.Providers;
 
+[SupportedOSPlatform("windows")]
 public sealed class UnityScanner
 {
-    private readonly Vmm _vmm;
-    private readonly uint _pid;
-    private nint _unityPlayerBase;
+    private const string GameObjectManagerPattern = "48 8B 05 ?? ?? ?? ?? 48 85 C0 74 ?? 48 8B 40 ?? 48 85 C0";
+    private readonly VmmProcess _process;
 
-    public UnityScanner(Vmm vmm, uint pid)
+    public UnityScanner(VmmProcess process)
     {
-        _vmm = vmm;
-        _pid = pid;
-        // 修正为 Map_GetModuleFromName
-        _unityPlayerBase = (nint)_vmm.ProcessGetModuleBase(_pid, "UnityPlayer.dll");
+        _process = process;
     }
 
     public ulong FindGameObjectManager()
     {
-        string pattern = "48 8B 05 ?? ?? ?? ?? 48 85 C0 74 ?? 48 8B 40 ?? 48 85 C0";
-        // 修正为 Search
-        var results = _vmm.Search(_pid, pattern, (ulong)_unityPlayerBase, 0x10000000);
+        var unityPlayerBase = _process.GetModuleBase("UnityPlayer.dll");
+        if (unityPlayerBase == 0)
+        {
+            Logger.Warn("SCAN", "UnityPlayer.dll was not found in the target process.");
+            return 0;
+        }
 
-        if (results == null || results.Length == 0) return 0;
+        try
+        {
+            var (patternBytes, wildcardMask) = ParsePattern(GameObjectManagerPattern);
+            using var search = _process.Search(unityPlayerBase, unityPlayerBase + 0x10000000, 8, Vmm.FLAG_NOCACHE);
+            search.AddSearch(patternBytes, wildcardMask, 1);
+            search.Start();
 
-        var instrAddr = results[0];
-        byte[] buffer = new byte[4];
-        uint cbRead;
-        bool success = _vmm.MemRead(_pid, (nint)(instrAddr + 3), buffer, out cbRead, Vmm.FLAG_NOCACHE);
-        
-        if (!success || cbRead != 4) return 0;
-        uint relativeOffset = BitConverter.ToUInt32(buffer, 0);
-        return instrAddr + 7 + relativeOffset;
+            var result = search.Result();
+            if (!result.isCompletedSuccess || result.result is null || result.result.Count == 0)
+            {
+                Logger.Warn("SCAN", "GameObjectManager signature scan did not return any matches.");
+                return 0;
+            }
+
+            var instructionAddress = result.result[0].address;
+            var relativeOffsetBytes = _process.MemRead(instructionAddress + 3, 4, Vmm.FLAG_NOCACHE);
+            if (relativeOffsetBytes.Length != 4)
+            {
+                Logger.Warn("SCAN", "Failed to read the GameObjectManager RIP-relative offset.");
+                return 0;
+            }
+
+            var relativeOffset = BitConverter.ToInt32(relativeOffsetBytes, 0);
+            return (ulong)((long)instructionAddress + 7 + relativeOffset);
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn("SCAN", $"Automatic Unity scan failed: {ex.Message}");
+            return 0;
+        }
     }
 
     public ulong FindObjectByName(string name)
     {
-        ulong gomAddr = FindGameObjectManager();
-        if (gomAddr == 0) return 0;
-
-        byte[] buffer = new byte[8];
-        uint cbRead;
-        if (!_vmm.MemRead(_pid, (nint)(gomAddr + 0x10), buffer, out cbRead, Vmm.FLAG_NOCACHE)) return 0;
-        
-        ulong currentNode = BitConverter.ToUInt64(buffer, 0);
-        int limit = 1024;
-        
-        while (currentNode != 0 && limit-- > 0)
+        var gameObjectManagerAddress = FindGameObjectManager();
+        if (gameObjectManagerAddress == 0)
         {
-            byte[] nodeBuffer = new byte[8];
-            if (_vmm.MemRead(_pid, (nint)(currentNode + 0x10), nodeBuffer, out cbRead, Vmm.FLAG_NOCACHE))
-            {
-                ulong gameObject = BitConverter.ToUInt64(nodeBuffer, 0);
-                if (gameObject != 0)
-                {
-                    byte[] namePtrBuffer = new byte[8];
-                    if (_vmm.MemRead(_pid, (nint)(gameObject + 0x30), namePtrBuffer, out cbRead, Vmm.FLAG_NOCACHE))
-                    {
-                        ulong namePtr = BitConverter.ToUInt64(namePtrBuffer, 0);
-                        if (namePtr != 0)
-                        {
-                            // 修正为 MemReadString
-                            string objName = _vmm.MemReadString(_pid, (nint)namePtr, 64);
-                            if (!string.IsNullOrEmpty(objName) && objName.Contains(name, StringComparison.OrdinalIgnoreCase))
-                            {
-                                return gameObject;
-                            }
-                        }
-                    }
-                }
-            }
-            
-            byte[] nextBuffer = new byte[8];
-            if (!_vmm.MemRead(_pid, (nint)(currentNode + 0x8), nextBuffer, out cbRead, Vmm.FLAG_NOCACHE)) break;
-            currentNode = BitConverter.ToUInt64(nextBuffer, 0);
+            return 0;
         }
 
+        var currentNode = ReadUInt64(gameObjectManagerAddress + 0x10);
+        var remainingNodes = 1024;
+
+        while (currentNode != 0 && remainingNodes-- > 0)
+        {
+            var gameObject = ReadUInt64(currentNode + 0x10);
+            if (gameObject != 0)
+            {
+                var namePtr = ReadUInt64(gameObject + 0x30);
+                var objectName = ReadString(namePtr);
+                if (!string.IsNullOrWhiteSpace(objectName) &&
+                    objectName.Contains(name, StringComparison.OrdinalIgnoreCase))
+                {
+                    Logger.Info("SCAN", $"Found '{objectName}' at 0x{gameObject:X}.");
+                    return gameObject;
+                }
+            }
+
+            currentNode = ReadUInt64(currentNode + 0x8);
+        }
+
+        Logger.Warn("SCAN", $"Could not find GameObject '{name}'.");
         return 0;
+    }
+
+    private static (byte[] PatternBytes, byte[] WildcardMask) ParsePattern(string pattern)
+    {
+        var tokens = pattern.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var patternBytes = new byte[tokens.Length];
+        var wildcardMask = new byte[tokens.Length];
+
+        for (var i = 0; i < tokens.Length; i++)
+        {
+            if (tokens[i] == "??")
+            {
+                wildcardMask[i] = 0xFF;
+                continue;
+            }
+
+            patternBytes[i] = Convert.ToByte(tokens[i], 16);
+        }
+
+        return (patternBytes, wildcardMask);
+    }
+
+    private ulong ReadUInt64(ulong address)
+    {
+        var bytes = _process.MemRead(address, 8, Vmm.FLAG_NOCACHE);
+        return bytes.Length == 8 ? BitConverter.ToUInt64(bytes, 0) : 0;
+    }
+
+    private string ReadString(ulong address)
+    {
+        if (address == 0)
+        {
+            return string.Empty;
+        }
+
+        return _process.MemReadString(Encoding.UTF8, address, 64, Vmm.FLAG_NOCACHE, true).TrimEnd('\0');
     }
 }
