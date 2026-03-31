@@ -8,43 +8,48 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
 {
     private Vmm? _vmm;
     private uint _pid;
+    private ulong _targetObjectAddr;
     private readonly string _processName;
 
-    // --- 这里的 Offset 主人以后直接填在这里喵！ ---
-    private const ulong OFFSET_GAMEOBJECT_MANAGER = 0x0; // 填 CE 找出来的 Offset 喵
-    
     public DmaProvider(string processName)
     {
         _processName = processName;
+        Initialize();
+    }
+
+    private void Initialize()
+    {
         try {
-            // 初始化 DMA 硬件 (主人记得插好硬件喵！)
             _vmm = new Vmm("-device", "fpga");
             if (_vmm.PidGetFromName(_processName, out _pid)) {
-                Logger.Info("DMA", $"已成功连接到 {_processName} (PID: {_pid}) (∠・ω< )⌒★");
-            } else {
-                Logger.Warn("DMA", $"等待进程 {_processName} 启动中... 记得先开 VRChat 喵！");
+                Logger.Info("DMA", $"已连接到 {_processName} (PID: {_pid})");
+                
+                // 启动自动导航雷达！
+                var scanner = new UnityScanner(_vmm, _pid);
+                _targetObjectAddr = scanner.FindObjectByName("FishingLogic"); // 默认找钓鱼逻辑对象
+                
+                if (_targetObjectAddr == 0) {
+                    Logger.Warn("DMA", "未能自动定位到钓鱼对象，可能需要进入钓鱼区域喵！");
+                }
             }
         } catch (Exception ex) {
-            Logger.Error("DMA", $"驱动初始化失败: {ex.Message}。主人确认一下副机有没有装好 vmm.dll 喵！");
+            Logger.Error("DMA", $"初始化失败: {ex.Message}");
         }
     }
 
     public FishContext Read()
     {
-        if (_vmm == null || _pid == 0) return new FishContext();
+        if (_vmm == null || _pid == 0 || _targetObjectAddr == 0) return new FishContext();
 
-        // --- 核心读取逻辑 (主人以后在这里填空喵！) ---
-        // 示例用法: 
-        // var assemblyBase = _vmm.ProcessGetModuleBase(_pid, "GameAssembly.dll");
-        // byte[] buffer = _vmm.MemRead(_pid, assemblyBase + 0x123456, 4);
-
+        // 到这一步，主人只需要根据 _targetObjectAddr 往里偏移去读 Udon 变量就行了喵！
+        // 比如: [targetObjectAddr + ComponentOffset] -> [UdonBehavior] -> [PublicVariables]
+        
         return new FishContext {
-            IsHooked = false, // 填入判断逻辑喵
-            Tension = 0.0f    // 填入数值逻辑喵
+            IsHooked = false, // 待主人补全读取逻辑喵
+            Tension = 0.0f
         };
     }
 
     public void ResetCycle() { }
-
     public void Dispose() => _vmm?.Dispose();
 }
