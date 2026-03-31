@@ -11,18 +11,19 @@ public sealed class KmboxInputController : IInputController
         try {
             _port = new SerialPort(portName, baudRate);
             _port.Open();
-        } catch { /* Handle in logs */ }
+        } catch { }
     }
 
-    public void ClickLeft()
-    {
-        _port?.Write("km.click(1)\r\n");
+    public void BeginCast() { _port?.Write("km.left(1)\r\n"); }
+    public void EndCast() { _port?.Write("km.left(0)\r\n"); }
+    public void ReelPulse(int durationMs) 
+    { 
+        _port?.Write("km.left(1)\r\n"); 
+        Thread.Sleep(durationMs); 
+        _port?.Write("km.left(0)\r\n"); 
     }
-
-    public void Move(int x, int y)
-    {
-        _port?.Write($"km.move({x},{y})\r\n");
-    }
-
+    public void Wait(int ms) { Thread.Sleep(ms); }
+    public void ClickLeft() { _port?.Write("km.click(1)\r\n"); }
+    public void Move(int x, int y) { _port?.Write($"km.move({x},{y})\r\n"); }
     public void Dispose() => _port?.Dispose();
 }
