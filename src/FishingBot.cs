@@ -6,7 +6,8 @@ public sealed class FishingBot
     private readonly IInputController _input;
     private readonly BotConfig _config;
 
-    private FishState _state = FishState.Idle;
+    public FishState State { get; private set; } = FishState.Idle;
+    public FishContext LastContext { get; private set; } = new();
     private DateTime _stateEnteredAt = DateTime.Now;
     private bool _pausedForTension;
 
@@ -19,9 +20,9 @@ public sealed class FishingBot
 
     public void Tick()
     {
-        var ctx = _signalSource.Read();
+        LastContext = _signalSource.Read();
 
-        switch (_state)
+        switch (State)
         {
             case FishState.Idle:
                 Transition(FishState.Casting, "starting cast cycle");
@@ -37,8 +38,8 @@ public sealed class FishingBot
                 break;
 
             case FishState.Waiting:
-                if (ctx.IsHooked)
-                    Transition(FishState.Hooked, $"fish hooked ({ctx})");
+                if (LastContext.IsHooked)
+                    Transition(FishState.Hooked, "fish hooked!");
                 break;
 
             case FishState.Hooked:
@@ -47,22 +48,21 @@ public sealed class FishingBot
                 break;
 
             case FishState.Reeling:
-                if (ctx.CatchCompleted)
+                if (LastContext.CatchCompleted)
                 {
-                    Logger.Info("BOT", $"Catch completed ({ctx})");
-                    Transition(FishState.Cooldown, "enter cooldown");
+                    Transition(FishState.Cooldown, "catch completed");
                     break;
                 }
 
-                if (!_pausedForTension && ctx.Tension >= _config.ReelTensionPauseThreshold)
+                if (!_pausedForTension && LastContext.Tension >= _config.ReelTensionPauseThreshold)
                 {
                     _pausedForTension = true;
-                    Logger.Warn("BOT", $"Tension high, pause reeling ({ctx.Tension:F2})");
+                    Logger.Warn("BOT", "Tension high! pausing...");
                 }
-                else if (_pausedForTension && ctx.Tension <= _config.ReelTensionResumeThreshold)
+                else if (_pausedForTension && LastContext.Tension <= _config.ReelTensionResumeThreshold)
                 {
                     _pausedForTension = false;
-                    Logger.Info("BOT", $"Tension normalized, resume reeling ({ctx.Tension:F2})");
+                    Logger.Info("BOT", "Tension normalized, resume...");
                 }
 
                 if (_pausedForTension)
@@ -83,8 +83,8 @@ public sealed class FishingBot
 
     private void Transition(FishState newState, string reason)
     {
-        Logger.Info("FSM", $"{_state} -> {newState} | {reason}");
-        _state = newState;
+        Logger.Info("FSM", $"{State} -> {newState} | {reason}");
+        State = newState;
         _stateEnteredAt = DateTime.Now;
     }
 

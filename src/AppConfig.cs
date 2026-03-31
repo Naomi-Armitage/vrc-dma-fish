@@ -9,8 +9,9 @@ public sealed class AppConfig
 
 public sealed class InputConfig
 {
-    public string Type { get; set; } = "Mock"; // Mock, Serial, Net
-    public string ComPort { get; set; } = "COM3";
+    public string Type { get; set; } = "Mock";
+    public string ComPort { get; set; } = "Auto"; // 默认 Auto 自动识别喵
+    public int BaudRate { get; set; } = 115200;  // 默认波特率喵
     public string NetIp { get; set; } = "192.168.2.188";
     public int NetPort { get; set; } = 8006;
 }
