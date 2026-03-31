@@ -6,8 +6,10 @@ if (!(Test-Path $TargetDir)) {
     New-Item -ItemType Directory -Force -Path $TargetDir
 }
 
-Write-Host "--- VrcDmaFish Setup: Mirror Mode ---" -ForegroundColor Cyan
-$GithubUrl = "https://github.com/ufrisk/MemProcFS/releases/download/v5.17.0/MemProcFS_v5.17.0_win_x64.zip"
+Write-Host "--- VrcDmaFish Setup: Fixed Mirror Mode ---" -ForegroundColor Cyan
+# 官方修正后的链接喵！
+$GithubUrl = "https://github.com/ufrisk/MemProcFS/releases/download/v5.17/MemProcFS_v5.17-win_x64.zip"
+
 $Mirrors = @(
     "https://mirror.ghproxy.com/$GithubUrl",
     "https://ghproxy.net/$GithubUrl",
@@ -21,10 +23,13 @@ foreach ($url in $Mirrors) {
     Write-Host "Attempting download from: $url" -ForegroundColor Yellow
     try {
         Invoke-WebRequest -Uri $url -OutFile $ZipFile -TimeoutSec 60
-        if ((Get-Item $ZipFile).Length -gt 1000000) {
-            $Success = $true
-            Write-Host "Download complete!" -ForegroundColor Green
-            break
+        if (Test-Path $ZipFile) {
+            $len = (Get-Item $ZipFile).Length
+            if ($len -gt 1000000) {
+                $Success = $true
+                Write-Host "Download complete!" -ForegroundColor Green
+                break
+            }
         }
     } catch {
         Write-Host "Failed to download from this link." -ForegroundColor Gray
@@ -32,7 +37,8 @@ foreach ($url in $Mirrors) {
 }
 
 if (-not $Success) {
-    Write-Host "All download links failed. Please check your internet connection." -ForegroundColor Red
+    Write-Host "!!! ALL DOWNLOADS FAILED !!!" -ForegroundColor Red
+    Write-Host "Manual download: $GithubUrl" -ForegroundColor Red
     return
 }
 
@@ -40,9 +46,10 @@ Write-Host "Deploying driver files..." -ForegroundColor Yellow
 if (Test-Path "temp_mem") { Remove-Item -Recurse -Force "temp_mem" }
 Expand-Archive -Path $ZipFile -DestinationPath "temp_mem" -Force
 
+# 这里的子目录名字也要根据 ZIP 结构微调喵
 $FilesToCopy = @("vmm.dll", "leechcore.dll", "FTD3XX.dll", "FTD601.dll", "info.db")
 foreach ($file in $FilesToCopy) {
-    $subPath = "temp_mem/MemProcFS_v5.17.0_win_x64/$file"
+    $subPath = "temp_mem/MemProcFS_v5.17-win_x64/$file"
     if (Test-Path $subPath) {
         Copy-Item $subPath -Destination $TargetDir -Force
         Write-Host "[OK] Deployed: $file" -ForegroundColor Green
