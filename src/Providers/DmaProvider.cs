@@ -1,3 +1,4 @@
+#pragma warning disable CA1416
 using Vmmsharp;
 using VrcDmaFish.Models;
 using VrcDmaFish.UI;
@@ -19,7 +20,8 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
     private void Initialize() {
         try {
             _vmm = new Vmm("-device", "fpga");
-            if (_vmm.PidGetFromName(_processName, out _pid)) {
+            // 修正函数名为 ProcessGetPidFromName
+            if (_vmm.ProcessGetPidFromName(_processName, out _pid)) {
                 var scanner = new UnityScanner(_vmm, _pid);
                 _targetObjectAddr = scanner.FindObjectByName("FishingLogic");
             }
@@ -30,9 +32,12 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
         if (_vmm == null || _targetObjectAddr == 0) return new FishContext();
 
         try {
+            byte[] buffer = new byte[4];
             uint cbRead;
-            byte[] buffer = _vmm.MemRead(_pid, (nint)(_targetObjectAddr + 0x40), 4, out cbRead, Vmm.FLAG_NOCACHE);
-            if (cbRead != 4) return new FishContext();
+            // 修正 MemRead 使用方式，先分配缓冲区
+            bool success = _vmm.MemRead(_pid, (nint)(_targetObjectAddr + 0x40), buffer, out cbRead, Vmm.FLAG_NOCACHE);
+            
+            if (!success || cbRead != 4) return new FishContext();
 
             float tension = BitConverter.ToSingle(buffer, 0);
             return new FishContext {
