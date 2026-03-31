@@ -1,0 +1,14 @@
+# .NET
+bin/
+obj/
+*.user
+*.userosscache
+*.sln.doccache
+
+# IDEs
+.vs/
+.vscode/
+.idea/
+
+# Config
+appsettings.json
