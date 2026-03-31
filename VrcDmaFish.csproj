@@ -9,5 +9,6 @@
   <ItemGroup>
     <PackageReference Include="Spectre.Console" Version="0.54.0" />
     <PackageReference Include="System.IO.Ports" Version="10.0.5" />
+    <PackageReference Include="vmmsharp" Version="5.17.0" />
   </ItemGroup>
 </Project>

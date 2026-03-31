@@ -1,7 +1,5 @@
-namespace VrcDmaFish;
-
-public interface IInputController
-{
+namespace VrcDmaFish.Inputs;
+public interface IInputController {
     void BeginCast();
     void EndCast();
     void ReelPulse(int durationMs);
