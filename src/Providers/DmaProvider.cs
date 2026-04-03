@@ -386,4 +386,15 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
         Logger.Debug("DMA", $"对象转储使用的 GameObjectManager 地址 0x{gameObjectManagerAddress:X}。");
         return scanner.DumpObjects(limit, gameObjectManagerAddress, _config.GetGameObjectManagerPatternCandidates());
     }
+
+    public IReadOnlyList<GameObjectManagerProbeResult> DumpGameObjectManagerCandidates(int limit)
+    {
+        if (!HasConnectedProcess || _process is null || limit <= 0)
+        {
+            return Array.Empty<GameObjectManagerProbeResult>();
+        }
+
+        var scanner = new UnityScanner(_process);
+        return scanner.ProbeGameObjectManagerCandidates(_config.GetGameObjectManagerPatternCandidates(), limit);
+    }
 }
