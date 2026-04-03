@@ -195,6 +195,7 @@ public sealed class SignalSourceConfig
     public string Type { get; set; } = "Mock";
     public string ProcessName { get; set; } = "VRChat";
     public string TargetObjectName { get; set; } = "FishingLogic";
+    public string? GameObjectManagerAddress { get; set; }
     public string? TargetObjectAddress { get; set; }
     public string? HookedOffset { get; set; }
     public string? CatchCompletedOffset { get; set; }
@@ -204,6 +205,8 @@ public sealed class SignalSourceConfig
     public string? BarHeightOffset { get; set; }
     public string? BarTopOffset { get; set; }
     public string? BarBottomOffset { get; set; }
+
+    public bool TryGetGameObjectManagerAddress(out ulong address) => TryParseAddress(GameObjectManagerAddress, out address);
 
     public bool TryGetTargetObjectAddress(out ulong address) => TryParseAddress(TargetObjectAddress, out address);
 

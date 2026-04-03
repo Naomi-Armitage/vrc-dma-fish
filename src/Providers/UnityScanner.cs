@@ -59,7 +59,16 @@ public sealed class UnityScanner
 
     public ulong FindObjectByName(string name)
     {
-        var gameObjectManagerAddress = FindGameObjectManager();
+        return FindObjectByName(name, 0);
+    }
+
+    public ulong FindObjectByName(string name, ulong gameObjectManagerAddress)
+    {
+        if (gameObjectManagerAddress == 0)
+        {
+            gameObjectManagerAddress = FindGameObjectManager();
+        }
+
         if (gameObjectManagerAddress == 0)
         {
             return 0;

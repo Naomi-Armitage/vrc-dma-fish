@@ -52,12 +52,19 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
             if (!_config.TryGetTargetObjectAddress(out _targetObjectAddr))
             {
                 var scanner = new UnityScanner(_process);
-                _targetObjectAddr = scanner.FindObjectByName(_config.TargetObjectName);
+                var gameObjectManagerAddress = 0UL;
+                if (_config.TryGetGameObjectManagerAddress(out var configuredGameObjectManagerAddress))
+                {
+                    gameObjectManagerAddress = configuredGameObjectManagerAddress;
+                    Logger.Info("DMA", $"使用配置中的 GameObjectManager 地址 0x{gameObjectManagerAddress:X}。");
+                }
+
+                _targetObjectAddr = scanner.FindObjectByName(_config.TargetObjectName, gameObjectManagerAddress);
             }
 
             if (_targetObjectAddr == 0)
             {
-                Logger.Warn("DMA", "目标对象地址缺失，且自动扫描未找到目标对象。");
+                Logger.Warn("DMA", "目标对象地址缺失，且自动扫描未找到目标对象。可在配置中填写 GameObjectManagerAddress 或 TargetObjectAddress 绕过特征扫描。");
                 return;
             }
 
