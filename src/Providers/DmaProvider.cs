@@ -39,11 +39,11 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
             }
 
             _vmm = new Vmm("-device", "fpga");
-            _process = _vmm.GetProcessByName(_config.ProcessName);
+            _process = ResolveProcess(_config.ProcessName);
 
             if (_process is null || !_process.IsValid)
             {
-                Logger.Warn("DMA", $"未找到进程 '{_config.ProcessName}'。");
+                Logger.Warn("DMA", BuildProcessNotFoundMessage(_config.ProcessName));
                 return;
             }
 
@@ -225,5 +225,117 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
 
         var normalizedDistance = Math.Abs(context.FishCenterY!.Value - context.BarCenterY!.Value) / Math.Max(context.BarHeight!.Value * 0.5f, 0.0001f);
         return Math.Clamp(normalizedDistance, 0f, 1f);
+    }
+
+    private VmmProcess? ResolveProcess(string? configuredProcessName)
+    {
+        if (_vmm is null || string.IsNullOrWhiteSpace(configuredProcessName))
+        {
+            return null;
+        }
+
+        foreach (var candidateName in BuildProcessNameCandidates(configuredProcessName))
+        {
+            var process = _vmm.GetProcessByName(candidateName);
+            if (process is not null && process.IsValid)
+            {
+                return process;
+            }
+        }
+
+        return FindProcessFromSnapshot(configuredProcessName);
+    }
+
+    private VmmProcess? FindProcessFromSnapshot(string configuredProcessName)
+    {
+        if (_vmm is null)
+        {
+            return null;
+        }
+
+        var normalizedTarget = NormalizeProcessName(configuredProcessName);
+        var processes = _vmm.AllProcesses ?? Array.Empty<VmmProcess>();
+
+        var exactMatch = processes.FirstOrDefault(process =>
+            process.IsValid &&
+            string.Equals(NormalizeProcessName(process.Name), normalizedTarget, StringComparison.OrdinalIgnoreCase));
+
+        if (exactMatch is not null)
+        {
+            return exactMatch;
+        }
+
+        return processes.FirstOrDefault(process =>
+            process.IsValid &&
+            NormalizeProcessName(process.Name).Contains(normalizedTarget, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private string BuildProcessNotFoundMessage(string configuredProcessName)
+    {
+        if (_vmm is null)
+        {
+            return $"未找到进程 '{configuredProcessName}'。";
+        }
+
+        var processes = _vmm.AllProcesses ?? Array.Empty<VmmProcess>();
+        var candidates = processes
+            .Where(process => process.IsValid)
+            .Where(process =>
+            {
+                var normalizedName = NormalizeProcessName(process.Name);
+                var normalizedTarget = NormalizeProcessName(configuredProcessName);
+                return normalizedName.Contains(normalizedTarget, StringComparison.OrdinalIgnoreCase) ||
+                    normalizedTarget.Contains(normalizedName, StringComparison.OrdinalIgnoreCase);
+            })
+            .Take(5)
+            .Select(process => $"{process.Name}(PID={process.PID})")
+            .ToArray();
+
+        if (candidates.Length == 0)
+        {
+            return $"未找到进程 '{configuredProcessName}'。DMA 当前可见 {processes.Length} 个进程。";
+        }
+
+        return $"未找到进程 '{configuredProcessName}'。DMA 当前候选: {string.Join(", ", candidates)}。";
+    }
+
+    private static IReadOnlyList<string> BuildProcessNameCandidates(string configuredProcessName)
+    {
+        var trimmed = configuredProcessName.Trim();
+        var candidates = new List<string>();
+
+        void AddCandidate(string value)
+        {
+            if (!candidates.Contains(value, StringComparer.OrdinalIgnoreCase))
+            {
+                candidates.Add(value);
+            }
+        }
+
+        AddCandidate(trimmed);
+
+        if (trimmed.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+        {
+            AddCandidate(trimmed[..^4]);
+        }
+        else
+        {
+            AddCandidate(trimmed + ".exe");
+        }
+
+        return candidates;
+    }
+
+    private static string NormalizeProcessName(string? processName)
+    {
+        if (string.IsNullOrWhiteSpace(processName))
+        {
+            return string.Empty;
+        }
+
+        var trimmed = processName.Trim();
+        return trimmed.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
+            ? trimmed[..^4]
+            : trimmed;
     }
 }
