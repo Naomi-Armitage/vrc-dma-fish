@@ -21,13 +21,13 @@ public static class Program
         }
         catch (Exception ex)
         {
-            Logger.Error("CONFIG", $"Failed to load {configPath}: {ex.Message}");
+            Logger.Error("配置", $"加载配置文件失败 {configPath}: {ex.Message}");
             return 1;
         }
 
         foreach (var warning in config.Normalize())
         {
-            Logger.Warn("CONFIG", warning);
+            Logger.Warn("配置", warning);
         }
 
         if (options.RunWizard && IsInteractiveConsole())
@@ -37,12 +37,12 @@ public static class Program
                 config = ConfigWizard.Run(config, configPath);
                 foreach (var warning in config.Normalize())
                 {
-                    Logger.Warn("CONFIG", warning);
+                    Logger.Warn("配置", warning);
                 }
             }
             catch (Exception ex)
             {
-                Logger.Error("CONFIG", $"Interactive configuration failed: {ex.Message}");
+                Logger.Error("配置", $"交互式配置失败: {ex.Message}");
                 return 1;
             }
         }
@@ -59,7 +59,7 @@ public static class Program
             {
                 eventArgs.Cancel = true;
                 cancelled = true;
-                Logger.Info("SYS", "Stop requested.");
+                Logger.Info("系统", "收到停止请求。");
             };
 
             if (IsInteractiveConsole())
@@ -75,7 +75,7 @@ public static class Program
         }
         catch (Exception ex)
         {
-            Logger.Error("SYS", $"Unhandled fatal error: {ex.Message}");
+            Logger.Error("系统", $"程序发生未处理的致命错误: {ex.Message}");
             return 1;
         }
         finally
@@ -150,7 +150,7 @@ public static class Program
             return new MockInputController();
         }
 
-        Logger.Warn("CONFIG", $"Unsupported input controller '{config.Type}'. Falling back to Mock.");
+        Logger.Warn("配置", $"不支持的输入控制器 '{config.Type}'，已回退到 Mock。");
         return new MockInputController();
     }
 
@@ -165,7 +165,7 @@ public static class Program
         {
             if (!OperatingSystem.IsWindows())
             {
-                Logger.Warn("CONFIG", "DMA mode is only supported on Windows. Falling back to Mock.");
+                Logger.Warn("配置", "DMA 模式仅支持 Windows，已回退到 Mock。");
                 return new MockFishSignalSource();
             }
 
@@ -175,12 +175,12 @@ public static class Program
                 return dmaProvider;
             }
 
-            Logger.Warn("CONFIG", "DMA source is not ready. Falling back to Mock.");
+            Logger.Warn("配置", "DMA 信号源未就绪，已回退到 Mock。");
             dmaProvider.Dispose();
             return new MockFishSignalSource();
         }
 
-        Logger.Warn("CONFIG", $"Unsupported signal source '{config.Type}'. Falling back to Mock.");
+        Logger.Warn("配置", $"不支持的信号源 '{config.Type}'，已回退到 Mock。");
         return new MockFishSignalSource();
     }
 
@@ -208,7 +208,7 @@ public static class Program
                     }
                     else
                     {
-                        Logger.Warn("CONFIG", $"Ignoring invalid tick count '{args[i]}'.");
+                        Logger.Warn("配置", $"忽略无效的 tick 次数 '{args[i]}'。");
                     }
 
                     continue;

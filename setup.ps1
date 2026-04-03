@@ -1,53 +1,160 @@
+﻿$ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
-$TargetDirs = @("bin/Debug/net8.0", "bin/Release/net8.0", ".")
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-Write-Host "--- VrcDmaFish Setup: Professional ---" -ForegroundColor Cyan
+$ScriptRoot = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
+$TargetDirs = @(
+    (Join-Path $ScriptRoot 'bin\Debug\net8.0'),
+    (Join-Path $ScriptRoot 'bin\Release\net8.0'),
+    $ScriptRoot
+)
 
-$GithubUrl = "https://github.com/ufrisk/MemProcFS/releases/download/v5.17/MemProcFS_files_and_binaries-win_x64-latest.zip"
-$ZipFile = "memprocfs.zip"
-$Success = $false
+$GithubUrl = 'https://github.com/ufrisk/MemProcFS/releases/download/v5.17/MemProcFS_files_and_binaries-win_x64-latest.zip'
+$ZipFile = Join-Path $ScriptRoot 'memprocfs.zip'
+$ExtractDir = Join-Path $ScriptRoot 'temp_mem'
+$RequiredFiles = @('vmm.dll', 'leechcore.dll', 'FTD3XX.dll', 'FTD601.dll', 'info.db')
 
-$IsChina = $false
-try {
-    $ip = Invoke-RestMethod -Uri "http://ip-api.com/json/" -TimeoutSec 3
-    if ($ip.countryCode -eq "CN") { $IsChina = $true }
-} catch {}
+Add-Type -AssemblyName System.Net.Http
+Add-Type -AssemblyName System.IO.Compression.FileSystem
 
-$Urls = if ($IsChina) { @("https://ghp.ci/" + $GithubUrl, $GithubUrl) } else { @($GithubUrl) }
+function Get-DownloadUrls {
+    $isChina = $false
 
-foreach ($url in $Urls) {
-    Write-Host "Downloading from: $url"
     try {
-        Invoke-WebRequest -Uri $url -OutFile $ZipFile -TimeoutSec 120
-        if (Test-Path $ZipFile) { $Success = $true; break }
-    } catch {
-        Write-Host "Link failed, trying next..."
+        $handler = [System.Net.Http.HttpClientHandler]::new()
+        $client = [System.Net.Http.HttpClient]::new($handler)
+        $client.Timeout = [TimeSpan]::FromSeconds(3)
+
+        try {
+            $response = $client.GetStringAsync('http://ip-api.com/json/').GetAwaiter().GetResult()
+            $payload = $response | ConvertFrom-Json
+            if ($payload.countryCode -eq 'CN') {
+                $isChina = $true
+            }
+        }
+        finally {
+            $client.Dispose()
+            $handler.Dispose()
+        }
+    }
+    catch {
+    }
+
+    if ($isChina) {
+        return @("https://ghp.ci/$GithubUrl", $GithubUrl)
+    }
+
+    return @($GithubUrl, "https://ghp.ci/$GithubUrl")
+}
+
+function Invoke-FileDownload {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Url,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DestinationPath
+    )
+
+    $handler = [System.Net.Http.HttpClientHandler]::new()
+    $client = [System.Net.Http.HttpClient]::new($handler)
+    $client.Timeout = [TimeSpan]::FromSeconds(120)
+
+    try {
+        $response = $client.GetAsync($Url, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+        $response.EnsureSuccessStatusCode()
+
+        $source = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+        $destination = [System.IO.File]::Open($DestinationPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+
+        try {
+            $source.CopyTo($destination)
+        }
+        finally {
+            $destination.Dispose()
+            $source.Dispose()
+        }
+    }
+    finally {
+        $client.Dispose()
+        $handler.Dispose()
     }
 }
 
-if (-not $Success) {
-    Write-Host "Download failed! Please check your network." -ForegroundColor Red
-    return
+function Expand-ZipArchive {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ZipPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DestinationPath
+    )
+
+    if (Test-Path $DestinationPath) {
+        Remove-Item -LiteralPath $DestinationPath -Recurse -Force
+    }
+
+    [System.IO.Directory]::CreateDirectory($DestinationPath) | Out-Null
+    [System.IO.Compression.ZipFile]::ExtractToDirectory($ZipPath, $DestinationPath)
 }
 
-Write-Host "Deploying driver files..."
-if (Test-Path "temp_mem") { Remove-Item -Recurse -Force "temp_mem" }
-Expand-Archive -Path $ZipFile -DestinationPath "temp_mem" -Force
+Write-Host '--- VrcDmaFish 安装向导 ---' -ForegroundColor Cyan
 
-$Dlls = Get-ChildItem -Path "temp_mem" -Recurse -Include "vmm.dll","leechcore.dll","FTD3XX.dll","FTD601.dll","info.db"
+if (Test-Path $ZipFile) {
+    Remove-Item -LiteralPath $ZipFile -Force
+}
+
+$downloaded = $false
+foreach ($url in Get-DownloadUrls) {
+    Write-Host ('正在下载：{0}' -f $url)
+    try {
+        Invoke-FileDownload -Url $url -DestinationPath $ZipFile
+        if (Test-Path $ZipFile) {
+            $downloaded = $true
+            break
+        }
+    }
+    catch {
+        Write-Host ('当前链接失败，尝试下一个：{0}' -f $_.Exception.Message) -ForegroundColor Yellow
+    }
+}
+
+if (-not $downloaded) {
+    Write-Host '下载失败，请检查网络连接。' -ForegroundColor Red
+    exit 1
+}
+
+Write-Host '正在部署驱动文件...'
+Expand-ZipArchive -ZipPath $ZipFile -DestinationPath $ExtractDir
+
+$foundFiles = Get-ChildItem -Path $ExtractDir -File -Recurse | Where-Object { $RequiredFiles -contains $_.Name }
+$missingFiles = $RequiredFiles | Where-Object { $_ -notin $foundFiles.Name }
+
+if ($missingFiles.Count -gt 0) {
+    Write-Host ('压缩包缺少必要文件：{0}' -f ($missingFiles -join ', ')) -ForegroundColor Red
+    exit 1
+}
 
 foreach ($dir in $TargetDirs) {
-    if (!(Test-Path $dir)) { New-Item -ItemType Directory -Force -Path $dir }
-    foreach ($dll in $Dlls) {
-        Copy-Item $dll.FullName -Destination $dir -Force
+    if (-not (Test-Path $dir)) {
+        [System.IO.Directory]::CreateDirectory($dir) | Out-Null
     }
-    Write-Host "Deployed to: $dir"
+
+    foreach ($file in $foundFiles) {
+        [System.IO.File]::Copy($file.FullName, (Join-Path $dir $file.Name), $true)
+    }
+
+    Write-Host ('已部署到：{0}' -f $dir)
 }
 
-Remove-Item $ZipFile -Force
-Remove-Item -Recurse -Force "temp_mem"
+if (Test-Path $ZipFile) {
+    Remove-Item -LiteralPath $ZipFile -Force
+}
 
-Write-Host ""
-Write-Host "Setup finished successfully!"
-Write-Host "You can now run 'dotnet run' to start."
+if (Test-Path $ExtractDir) {
+    Remove-Item -LiteralPath $ExtractDir -Recurse -Force
+}
+
+Write-Host ''
+Write-Host '安装完成。'
+Write-Host "现在可以运行 'dotnet run' 启动程序。"

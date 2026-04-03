@@ -11,9 +11,9 @@ public static class ConfigWizard
     {
         AnsiConsole.Clear();
         AnsiConsole.Write(new FigletText("VrcDmaFish").Color(Color.Cyan1));
-        AnsiConsole.MarkupLine("[bold cyan]Interactive setup[/]\n");
+        AnsiConsole.MarkupLine("[bold cyan]交互式配置[/]\n");
 
-        if (!AnsiConsole.Confirm("Edit the current configuration?", false))
+        if (!AnsiConsole.Confirm("要编辑当前配置吗？", false))
         {
             return current;
         }
@@ -25,7 +25,7 @@ public static class ConfigWizard
 
         current.Input.Type = AnsiConsole.Prompt(
             new SelectionPrompt<string>()
-                .Title("Choose the [green]input controller[/]:")
+                .Title("请选择[green]输入控制器[/]：")
                 .AddChoices(inputChoices));
 
         if (string.Equals(current.Input.Type, "Serial", StringComparison.OrdinalIgnoreCase))
@@ -35,29 +35,45 @@ public static class ConfigWizard
 
             current.Input.ComPort = AnsiConsole.Prompt(
                 new SelectionPrompt<string>()
-                    .Title("Choose the [yellow]serial port[/]:")
+                    .Title("请选择[yellow]串口端口[/]：")
                     .AddChoices(
                         ReorderChoices(
                             portChoices,
                             portChoices.Contains(current.Input.ComPort, StringComparer.OrdinalIgnoreCase) ? current.Input.ComPort : "Auto")));
 
-            current.Input.BaudRate = AnsiConsole.Ask("Serial baud rate?", current.Input.BaudRate > 0 ? current.Input.BaudRate : 115200);
+            current.Input.BaudRate = AnsiConsole.Ask("串口波特率？", current.Input.BaudRate > 0 ? current.Input.BaudRate : 115200);
         }
         else if (string.Equals(current.Input.Type, "Net", StringComparison.OrdinalIgnoreCase))
         {
-            current.Input.NetIp = AnsiConsole.Ask("KMBOX IP address?", string.IsNullOrWhiteSpace(current.Input.NetIp) ? "192.168.2.188" : current.Input.NetIp);
-            current.Input.NetPort = AnsiConsole.Ask("KMBOX UDP port?", current.Input.NetPort > 0 ? current.Input.NetPort : 8006);
+            current.Input.NetIp = AnsiConsole.Ask("KMBOX IP 地址？", string.IsNullOrWhiteSpace(current.Input.NetIp) ? "192.168.2.188" : current.Input.NetIp);
+            current.Input.NetPort = AnsiConsole.Ask("KMBOX UDP 端口？", current.Input.NetPort > 0 ? current.Input.NetPort : 8006);
         }
 
         current.Bot.ReelTensionPauseThreshold = AnsiConsole.Ask(
-            "Pause reeling tension threshold (0.0 - 1.0)?",
+            "收线暂停张力阈值（0.0 - 1.0）？",
             current.Bot.ReelTensionPauseThreshold);
 
         current.Bot.ReelTensionResumeThreshold = AnsiConsole.Ask(
-            "Resume reeling tension threshold (0.0 - 1.0)?",
+            "收线恢复张力阈值（0.0 - 1.0）？",
             current.Bot.ReelTensionResumeThreshold);
 
-        current.TickIntervalMs = AnsiConsole.Ask("Tick interval in milliseconds?", current.TickIntervalMs);
+        current.Bot.HookClickMs = AnsiConsole.Ask(
+            "咬钩时点击时长（毫秒）？",
+            current.Bot.HookClickMs);
+
+        current.Bot.ReelPulseMs = AnsiConsole.Ask(
+            "基础收线按住时长（毫秒）？",
+            current.Bot.ReelPulseMs);
+
+        current.Bot.ReelHoldGainMs = AnsiConsole.Ask(
+            "张力修正增益（毫秒）？",
+            current.Bot.ReelHoldGainMs);
+
+        current.Bot.ReelVelocityDampingMs = AnsiConsole.Ask(
+            "张力变化阻尼（毫秒）？",
+            current.Bot.ReelVelocityDampingMs);
+
+        current.TickIntervalMs = AnsiConsole.Ask("轮询间隔（毫秒）？", current.TickIntervalMs);
 
         MaybeUpdateSignalSourceDefault(current, previousInputType);
 
@@ -78,7 +94,7 @@ public static class ConfigWizard
         }
 
         File.WriteAllText(configPath, JsonSerializer.Serialize(current, new JsonSerializerOptions { WriteIndented = true }));
-        AnsiConsole.MarkupLine($"\n[green]Configuration saved to {configPath}.[/]");
+        AnsiConsole.MarkupLine($"\n[green]配置已保存到 {configPath}。[/]");
         Thread.Sleep(1200);
 
         return current;

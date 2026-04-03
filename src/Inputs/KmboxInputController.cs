@@ -12,7 +12,7 @@ public sealed class KmboxInputController : IInputController
         var resolvedPort = ResolvePortName(portName);
         if (string.IsNullOrWhiteSpace(resolvedPort))
         {
-            Logger.Warn("INPUT", "No serial KMBOX port could be resolved.");
+            Logger.Warn("输入", "未能解析到可用的串口 KMBOX 端口。");
             return;
         }
 
@@ -20,24 +20,33 @@ public sealed class KmboxInputController : IInputController
         {
             _port = new SerialPort(resolvedPort, baudRate);
             _port.Open();
-            Logger.Info("INPUT", $"Serial KMBOX connected on {resolvedPort} @ {baudRate}.");
+            Logger.Info("输入", $"串口 KMBOX 已连接：{resolvedPort} @ {baudRate}。");
         }
         catch (Exception ex)
         {
-            Logger.Warn("INPUT", $"Failed to open serial controller on {resolvedPort}: {ex.Message}");
+            Logger.Warn("输入", $"打开串口控制器失败 {resolvedPort}: {ex.Message}");
         }
     }
 
-    public void BeginCast() => Send("km.left(1)");
+    public void BeginCast() => MouseDown();
 
-    public void EndCast() => Send("km.left(0)");
+    public void EndCast() => MouseUp();
+
+    public void Click(int durationMs)
+    {
+        MouseDown();
+        Thread.Sleep(Math.Max(0, durationMs));
+        MouseUp();
+    }
 
     public void ReelPulse(int durationMs)
     {
-        Send("km.left(1)");
+        MouseDown();
         Thread.Sleep(Math.Max(0, durationMs));
-        Send("km.left(0)");
+        MouseUp();
     }
+
+    public void ReleaseReel() => MouseUp();
 
     public void Wait(int ms) => Thread.Sleep(Math.Max(0, ms));
 
@@ -75,9 +84,13 @@ public sealed class KmboxInputController : IInputController
         }
         catch (Exception ex)
         {
-            Logger.Warn("INPUT", $"Serial write failed: {ex.Message}");
+            Logger.Warn("输入", $"串口写入失败：{ex.Message}");
         }
     }
+
+    private void MouseDown() => Send("km.left(1)");
+
+    private void MouseUp() => Send("km.left(0)");
 
     private static string? ResolvePortName(string? portName)
     {

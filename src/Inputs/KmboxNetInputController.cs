@@ -16,16 +16,25 @@ public sealed class KmboxNetInputController : IInputController
         _port = port;
     }
 
-    public void BeginCast() => Send("km.left(1)");
+    public void BeginCast() => MouseDown();
 
-    public void EndCast() => Send("km.left(0)");
+    public void EndCast() => MouseUp();
+
+    public void Click(int durationMs)
+    {
+        MouseDown();
+        Thread.Sleep(Math.Max(0, durationMs));
+        MouseUp();
+    }
 
     public void ReelPulse(int durationMs)
     {
-        Send("km.left(1)");
+        MouseDown();
         Thread.Sleep(Math.Max(0, durationMs));
-        Send("km.left(0)");
+        MouseUp();
     }
+
+    public void ReleaseReel() => MouseUp();
 
     public void Wait(int ms) => Thread.Sleep(Math.Max(0, ms));
 
@@ -40,7 +49,11 @@ public sealed class KmboxNetInputController : IInputController
         }
         catch (Exception ex)
         {
-            Logger.Warn("INPUT", $"UDP send failed to {_ip}:{_port}: {ex.Message}");
+            Logger.Warn("输入", $"UDP 发送失败 {_ip}:{_port}: {ex.Message}");
         }
     }
+
+    private void MouseDown() => Send("km.left(1)");
+
+    private void MouseUp() => Send("km.left(0)");
 }

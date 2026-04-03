@@ -9,6 +9,7 @@ public sealed class FishingBot
     private readonly IFishSignalSource _src;
     private readonly IInputController _in;
     private readonly BotConfig _cfg;
+    private readonly TensionClickStrategy _reelStrategy = new();
     private DateTime _stateSince = DateTime.UtcNow;
     private bool _reelPausedForTension;
 
@@ -31,6 +32,8 @@ public sealed class FishingBot
         {
             case FishState.Idle:
                 _reelPausedForTension = false;
+                _reelStrategy.Reset();
+                _in.ReleaseReel();
                 _in.BeginCast();
                 TransitionTo(FishState.Casting);
                 break;
@@ -45,6 +48,7 @@ public sealed class FishingBot
                 break;
 
             case FishState.Waiting:
+                _in.ReleaseReel();
                 if (LastContext.IsHooked)
                 {
                     _reelPausedForTension = false;
@@ -54,6 +58,8 @@ public sealed class FishingBot
                 break;
 
             case FishState.Hooked:
+                _in.Click(_cfg.HookClickMs);
+                _reelStrategy.Reset();
                 TransitionTo(FishState.Reeling);
                 break;
 
@@ -61,25 +67,38 @@ public sealed class FishingBot
                 if (LastContext.CatchCompleted)
                 {
                     _reelPausedForTension = false;
+                    _in.ReleaseReel();
                     TransitionTo(FishState.Cooldown);
                 }
                 else if (ShouldPauseReeling(LastContext.Tension))
                 {
                     _reelPausedForTension = true;
+                    _in.ReleaseReel();
                     _in.Wait(_cfg.ReelRestMs);
                 }
                 else
                 {
                     _reelPausedForTension = false;
-                    _in.ReelPulse(_cfg.ReelPulseMs);
+                    var decision = _reelStrategy.Decide(LastContext, _cfg);
+                    if (decision.ShouldPress)
+                    {
+                        _in.ReelPulse(decision.HoldMs);
+                    }
+                    else
+                    {
+                        _in.ReleaseReel();
+                        _in.Wait(_cfg.ReelRestMs);
+                    }
                 }
 
                 break;
 
             case FishState.Cooldown:
+                _in.ReleaseReel();
                 if (ElapsedMilliseconds >= _cfg.CooldownMs)
                 {
                     _reelPausedForTension = false;
+                    _reelStrategy.Reset();
                     _src.ResetCycle();
                     TransitionTo(FishState.Idle);
                 }

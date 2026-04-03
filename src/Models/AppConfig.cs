@@ -37,43 +37,73 @@ public sealed class AppConfig
 
         if (TickIntervalMs < 10)
         {
-            warnings.Add($"TickIntervalMs={TickIntervalMs} is too small; using 10ms.");
+            warnings.Add($"TickIntervalMs={TickIntervalMs} 过小，已调整为 10ms。");
             TickIntervalMs = 10;
         }
 
         if (Bot.CastDurationMs < 0)
         {
-            warnings.Add($"CastDurationMs={Bot.CastDurationMs} is invalid; using 0.");
+            warnings.Add($"CastDurationMs={Bot.CastDurationMs} 无效，已调整为 0。");
             Bot.CastDurationMs = 0;
         }
 
         if (Bot.CooldownMs < 0)
         {
-            warnings.Add($"CooldownMs={Bot.CooldownMs} is invalid; using 0.");
+            warnings.Add($"CooldownMs={Bot.CooldownMs} 无效，已调整为 0。");
             Bot.CooldownMs = 0;
+        }
+
+        if (Bot.HookClickMs < 0)
+        {
+            warnings.Add($"HookClickMs={Bot.HookClickMs} 无效，已调整为 0。");
+            Bot.HookClickMs = 0;
         }
 
         if (Bot.ReelPulseMs < 0)
         {
-            warnings.Add($"ReelPulseMs={Bot.ReelPulseMs} is invalid; using 0.");
+            warnings.Add($"ReelPulseMs={Bot.ReelPulseMs} 无效，已调整为 0。");
             Bot.ReelPulseMs = 0;
+        }
+
+        if (Bot.ReelHoldMinMs < 0)
+        {
+            warnings.Add($"ReelHoldMinMs={Bot.ReelHoldMinMs} 无效，已调整为 0。");
+            Bot.ReelHoldMinMs = 0;
+        }
+
+        if (Bot.ReelHoldMaxMs < 0)
+        {
+            warnings.Add($"ReelHoldMaxMs={Bot.ReelHoldMaxMs} 无效，已调整为 0。");
+            Bot.ReelHoldMaxMs = 0;
+        }
+
+        if (Bot.ReelHoldGainMs < 0)
+        {
+            warnings.Add($"ReelHoldGainMs={Bot.ReelHoldGainMs} 无效，已调整为 0。");
+            Bot.ReelHoldGainMs = 0;
+        }
+
+        if (Bot.ReelVelocityDampingMs < 0)
+        {
+            warnings.Add($"ReelVelocityDampingMs={Bot.ReelVelocityDampingMs} 无效，已调整为 0。");
+            Bot.ReelVelocityDampingMs = 0;
         }
 
         if (Bot.ReelRestMs < 0)
         {
-            warnings.Add($"ReelRestMs={Bot.ReelRestMs} is invalid; using 0.");
+            warnings.Add($"ReelRestMs={Bot.ReelRestMs} 无效，已调整为 0。");
             Bot.ReelRestMs = 0;
         }
 
         if (Input.BaudRate <= 0)
         {
-            warnings.Add($"BaudRate={Input.BaudRate} is invalid; using 115200.");
+            warnings.Add($"BaudRate={Input.BaudRate} 无效，已调整为 115200。");
             Input.BaudRate = 115200;
         }
 
         if (Input.NetPort <= 0)
         {
-            warnings.Add($"NetPort={Input.NetPort} is invalid; using 8006.");
+            warnings.Add($"NetPort={Input.NetPort} 无效，已调整为 8006。");
             Input.NetPort = 8006;
         }
 
@@ -83,8 +113,15 @@ public sealed class AppConfig
         if (Bot.ReelTensionPauseThreshold < Bot.ReelTensionResumeThreshold)
         {
             warnings.Add(
-                $"ReelTensionPauseThreshold={Bot.ReelTensionPauseThreshold} must be >= ReelTensionResumeThreshold={Bot.ReelTensionResumeThreshold}; aligning pause threshold.");
+                $"ReelTensionPauseThreshold={Bot.ReelTensionPauseThreshold} 必须大于等于 ReelTensionResumeThreshold={Bot.ReelTensionResumeThreshold}，已自动对齐。");
             Bot.ReelTensionPauseThreshold = Bot.ReelTensionResumeThreshold;
+        }
+
+        if (Bot.ReelHoldMaxMs < Bot.ReelHoldMinMs)
+        {
+            warnings.Add(
+                $"ReelHoldMaxMs={Bot.ReelHoldMaxMs} 不能小于 ReelHoldMinMs={Bot.ReelHoldMinMs}，已自动对齐。");
+            Bot.ReelHoldMaxMs = Bot.ReelHoldMinMs;
         }
 
         if (string.IsNullOrWhiteSpace(Input.Type))

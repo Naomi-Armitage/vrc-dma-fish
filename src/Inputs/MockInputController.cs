@@ -10,7 +10,15 @@ public sealed class MockInputController : IInputController
     {
     }
 
+    public void Click(int durationMs)
+    {
+    }
+
     public void ReelPulse(int ms)
+    {
+    }
+
+    public void ReleaseReel()
     {
     }
 

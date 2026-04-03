@@ -38,11 +38,11 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
 
             if (_process is null || !_process.IsValid)
             {
-                Logger.Warn("DMA", $"Could not find process '{_config.ProcessName}'.");
+                Logger.Warn("DMA", $"未找到进程 '{_config.ProcessName}'。");
                 return;
             }
 
-            Logger.Info("DMA", $"Connected to {_process.Name} (PID: {_process.PID}).");
+            Logger.Info("DMA", $"已连接到 {_process.Name} (PID: {_process.PID})。");
 
             if (!_config.TryGetTargetObjectAddress(out _targetObjectAddr))
             {
@@ -52,7 +52,7 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
 
             if (_targetObjectAddr == 0)
             {
-                Logger.Warn("DMA", "Target object address is missing and auto-scan did not find the object.");
+                Logger.Warn("DMA", "目标对象地址缺失，且自动扫描未找到目标对象。");
                 return;
             }
 
@@ -61,7 +61,7 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
                 _offsets = offsets;
                 Logger.Info(
                     "DMA",
-                    $"Using configured offsets: hooked=0x{offsets.HookedOffset:X}, catch=0x{offsets.CatchCompletedOffset:X}, tension=0x{offsets.TensionOffset:X}.");
+                    $"使用配置中的偏移：hooked=0x{offsets.HookedOffset:X}, catch=0x{offsets.CatchCompletedOffset:X}, tension=0x{offsets.TensionOffset:X}。");
             }
             else
             {
@@ -72,14 +72,14 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
 
                 Logger.Warn(
                     "DMA",
-                    $"Hook/catch offsets are missing. Falling back to tension-only mode using offset 0x{_fallbackTensionOffset:X}.");
+                    $"缺少 hooked/catch 偏移，已回退到仅张力模式，使用偏移 0x{_fallbackTensionOffset:X}。");
             }
 
             IsReady = true;
         }
         catch (Exception ex)
         {
-            Logger.Error("DMA", $"Initialization failed: {ex.Message}");
+            Logger.Error("DMA", $"初始化失败: {ex.Message}");
         }
     }
 
@@ -112,7 +112,7 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
         }
         catch (Exception ex)
         {
-            Logger.Error("DMA", $"Read failed: {ex.Message}");
+            Logger.Error("DMA", $"读取失败: {ex.Message}");
             IsReady = false;
             return new FishContext();
         }
@@ -132,10 +132,10 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
     {
         if (_process is null)
         {
-            throw new InvalidOperationException("DMA process is not initialized.");
+            throw new InvalidOperationException("DMA 进程尚未初始化。");
         }
 
         return _process.MemReadAs<T>(address, Vmm.FLAG_NOCACHE)
-            ?? throw new InvalidOperationException($"Failed to read {typeof(T).Name} at 0x{address:X}.");
+            ?? throw new InvalidOperationException($"读取 0x{address:X} 处的 {typeof(T).Name} 失败。");
     }
 }

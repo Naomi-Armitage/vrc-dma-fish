@@ -21,7 +21,7 @@ public sealed class UnityScanner
         var unityPlayerBase = _process.GetModuleBase("UnityPlayer.dll");
         if (unityPlayerBase == 0)
         {
-            Logger.Warn("SCAN", "UnityPlayer.dll was not found in the target process.");
+            Logger.Warn("扫描", "目标进程中未找到 UnityPlayer.dll。");
             return 0;
         }
 
@@ -35,7 +35,7 @@ public sealed class UnityScanner
             var result = search.Result();
             if (!result.isCompletedSuccess || result.result is null || result.result.Count == 0)
             {
-                Logger.Warn("SCAN", "GameObjectManager signature scan did not return any matches.");
+                Logger.Warn("扫描", "GameObjectManager 特征扫描未返回任何匹配项。");
                 return 0;
             }
 
@@ -43,7 +43,7 @@ public sealed class UnityScanner
             var relativeOffsetBytes = _process.MemRead(instructionAddress + 3, 4, Vmm.FLAG_NOCACHE);
             if (relativeOffsetBytes.Length != 4)
             {
-                Logger.Warn("SCAN", "Failed to read the GameObjectManager RIP-relative offset.");
+                Logger.Warn("扫描", "读取 GameObjectManager RIP 相对偏移失败。");
                 return 0;
             }
 
@@ -52,7 +52,7 @@ public sealed class UnityScanner
         }
         catch (Exception ex)
         {
-            Logger.Warn("SCAN", $"Automatic Unity scan failed: {ex.Message}");
+            Logger.Warn("扫描", $"Unity 自动扫描失败: {ex.Message}");
             return 0;
         }
     }
@@ -78,7 +78,7 @@ public sealed class UnityScanner
                 if (!string.IsNullOrWhiteSpace(objectName) &&
                     objectName.Contains(name, StringComparison.OrdinalIgnoreCase))
                 {
-                    Logger.Info("SCAN", $"Found '{objectName}' at 0x{gameObject:X}.");
+                    Logger.Info("扫描", $"找到对象 '{objectName}'，地址 0x{gameObject:X}。");
                     return gameObject;
                 }
             }
@@ -86,7 +86,7 @@ public sealed class UnityScanner
             currentNode = ReadUInt64(currentNode + 0x8);
         }
 
-        Logger.Warn("SCAN", $"Could not find GameObject '{name}'.");
+        Logger.Warn("扫描", $"未找到 GameObject '{name}'。");
         return 0;
     }
 
