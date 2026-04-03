@@ -27,6 +27,7 @@
 ```
 
 脚本会尝试下载 `MemProcFS` 相关文件并复制到程序运行目录。
+如果压缩包里没有携带 FTDI 驱动库，脚本会继续部署 `vmm.dll` / `leechcore.dll` / `info.db`，并提示你手动补 `FTD3XX.dll` 或 `FTD3XXWU.dll`。
 
 ### 2. 编译
 
@@ -68,4 +69,5 @@ dotnet run
 - DMA 模式仅支持 Windows。
 - 如果 DMA 初始化失败，程序会自动回退到 Mock 信号源，方便先检查流程和输入链路。
 - 位置控制是否真正启用，取决于 DMA 是否能稳定读到鱼位置和白条位置；面板里会显示“位置控制 已就绪/未就绪”。
+- `setup.ps1` 不再强制要求 `FTD601.dll`；对于 PCILeech FPGA，请按上游说明把 `FTD3XX.dll` 或 `FTD3XXWU.dll` 放到 `leechcore.dll` 同目录。
 - 如果本地目录里还有嵌套仓库副本，请移走，避免重复编译源码。

@@ -12,7 +12,8 @@ $TargetDirs = @(
 $GithubUrl = 'https://github.com/ufrisk/MemProcFS/releases/download/v5.17/MemProcFS_files_and_binaries-win_x64-latest.zip'
 $ZipFile = Join-Path $ScriptRoot 'memprocfs.zip'
 $ExtractDir = Join-Path $ScriptRoot 'temp_mem'
-$RequiredFiles = @('vmm.dll', 'leechcore.dll', 'FTD3XX.dll', 'FTD601.dll', 'info.db')
+$RequiredFiles = @('vmm.dll', 'leechcore.dll', 'info.db')
+$OptionalDriverFiles = @('FTD3XX.dll', 'FTD3XXWU.dll', 'FTD601.dll')
 
 Add-Type -AssemblyName System.Net.Http
 Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -127,24 +128,36 @@ if (-not $downloaded) {
 Write-Host '正在部署驱动文件...'
 Expand-ZipArchive -ZipPath $ZipFile -DestinationPath $ExtractDir
 
-$foundFiles = Get-ChildItem -Path $ExtractDir -File -Recurse | Where-Object { $RequiredFiles -contains $_.Name }
-$missingFiles = $RequiredFiles | Where-Object { $_ -notin $foundFiles.Name }
+$allFiles = Get-ChildItem -Path $ExtractDir -File -Recurse
+$requiredFilesFound = $allFiles | Where-Object { $RequiredFiles -contains $_.Name }
+$optionalFilesFound = $allFiles | Where-Object { $OptionalDriverFiles -contains $_.Name }
+$missingFiles = $RequiredFiles | Where-Object { $_ -notin $requiredFilesFound.Name }
 
 if ($missingFiles.Count -gt 0) {
     Write-Host ('压缩包缺少必要文件：{0}' -f ($missingFiles -join ', ')) -ForegroundColor Red
     exit 1
 }
 
+$filesToDeploy = @($requiredFilesFound + $optionalFilesFound)
+
 foreach ($dir in $TargetDirs) {
     if (-not (Test-Path $dir)) {
         [System.IO.Directory]::CreateDirectory($dir) | Out-Null
     }
 
-    foreach ($file in $foundFiles) {
+    foreach ($file in $filesToDeploy) {
         [System.IO.File]::Copy($file.FullName, (Join-Path $dir $file.Name), $true)
     }
 
     Write-Host ('已部署到：{0}' -f $dir)
+}
+
+if ($optionalFilesFound.Count -gt 0) {
+    Write-Host ('已检测到 FTDI 库：{0}' -f (($optionalFilesFound | Select-Object -ExpandProperty Name | Sort-Object -Unique) -join ', ')) -ForegroundColor Green
+}
+else {
+    Write-Host '当前压缩包未包含 FTDI 库（FTD3XX.dll / FTD3XXWU.dll）。' -ForegroundColor Yellow
+    Write-Host '如果你使用 PCILeech FPGA，请手动将 FTDI 驱动 DLL 放到 leechcore.dll 同目录。' -ForegroundColor Yellow
 }
 
 if (Test-Path $ZipFile) {
