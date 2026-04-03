@@ -8,7 +8,7 @@ namespace VrcDmaFish.Providers;
 [SupportedOSPlatform("windows")]
 public sealed class UnityScanner
 {
-    private const string GameObjectManagerPattern = "48 8B 05 ?? ?? ?? ?? 48 85 C0 74 ?? 48 8B 40 ?? 48 85 C0";
+    private const string DefaultGameObjectManagerPattern = "48 8B 05 ?? ?? ?? ?? 48 85 C0 74 ?? 48 8B 40 ?? 48 85 C0";
     private readonly VmmProcess _process;
 
     public UnityScanner(VmmProcess process)
@@ -16,7 +16,7 @@ public sealed class UnityScanner
         _process = process;
     }
 
-    public ulong FindGameObjectManager()
+    public ulong FindGameObjectManager(string? pattern = null)
     {
         var unityPlayerBase = _process.GetModuleBase("UnityPlayer.dll");
         if (unityPlayerBase == 0)
@@ -27,7 +27,8 @@ public sealed class UnityScanner
 
         try
         {
-            var (patternBytes, wildcardMask) = ParsePattern(GameObjectManagerPattern);
+            var activePattern = string.IsNullOrWhiteSpace(pattern) ? DefaultGameObjectManagerPattern : pattern.Trim();
+            var (patternBytes, wildcardMask) = ParsePattern(activePattern);
             using var search = _process.Search(unityPlayerBase, unityPlayerBase + 0x10000000, 8, Vmm.FLAG_NOCACHE);
             search.AddSearch(patternBytes, wildcardMask, 1);
             search.Start();
@@ -35,7 +36,7 @@ public sealed class UnityScanner
             var result = search.Result();
             if (!result.isCompletedSuccess || result.result is null || result.result.Count == 0)
             {
-                Logger.Warn("扫描", "GameObjectManager 特征扫描未返回任何匹配项。");
+                Logger.Warn("扫描", $"GameObjectManager 特征扫描未返回任何匹配项。当前特征码: {activePattern}");
                 return 0;
             }
 
@@ -59,14 +60,19 @@ public sealed class UnityScanner
 
     public ulong FindObjectByName(string name)
     {
-        return FindObjectByName(name, 0);
+        return FindObjectByName(name, 0, null);
     }
 
     public ulong FindObjectByName(string name, ulong gameObjectManagerAddress)
     {
+        return FindObjectByName(name, gameObjectManagerAddress, null);
+    }
+
+    public ulong FindObjectByName(string name, ulong gameObjectManagerAddress, string? gameObjectManagerPattern)
+    {
         if (gameObjectManagerAddress == 0)
         {
-            gameObjectManagerAddress = FindGameObjectManager();
+            gameObjectManagerAddress = FindGameObjectManager(gameObjectManagerPattern);
         }
 
         if (gameObjectManagerAddress == 0)

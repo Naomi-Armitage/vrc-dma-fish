@@ -195,6 +195,7 @@ public sealed class SignalSourceConfig
     public string Type { get; set; } = "Mock";
     public string ProcessName { get; set; } = "VRChat";
     public string TargetObjectName { get; set; } = "FishingLogic";
+    public string? GameObjectManagerPattern { get; set; }
     public string? GameObjectManagerAddress { get; set; }
     public string? TargetObjectAddress { get; set; }
     public string? HookedOffset { get; set; }

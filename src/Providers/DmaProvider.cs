@@ -59,7 +59,7 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
                     Logger.Info("DMA", $"使用配置中的 GameObjectManager 地址 0x{gameObjectManagerAddress:X}。");
                 }
 
-                _targetObjectAddr = scanner.FindObjectByName(_config.TargetObjectName, gameObjectManagerAddress);
+                _targetObjectAddr = scanner.FindObjectByName(_config.TargetObjectName, gameObjectManagerAddress, _config.GameObjectManagerPattern);
             }
 
             if (_targetObjectAddr == 0)
