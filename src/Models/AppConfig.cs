@@ -6,6 +6,7 @@ namespace VrcDmaFish.Models;
 public sealed class AppConfig
 {
     public int TickIntervalMs { get; set; } = 60;
+    public LoggingConfig Logging { get; set; } = new();
     public InputConfig Input { get; set; } = new();
     public SignalSourceConfig SignalSource { get; set; } = new();
     public BotConfig Bot { get; set; } = new();
@@ -25,6 +26,7 @@ public sealed class AppConfig
         };
 
         var config = JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(path), jsonOptions) ?? new AppConfig();
+        config.Logging ??= new LoggingConfig();
         config.Input ??= new InputConfig();
         config.SignalSource ??= new SignalSourceConfig();
         config.Bot ??= new BotConfig();
@@ -39,6 +41,39 @@ public sealed class AppConfig
         {
             warnings.Add($"TickIntervalMs={TickIntervalMs} 过小，已调整为 10ms。");
             TickIntervalMs = 10;
+        }
+
+        if (string.IsNullOrWhiteSpace(Logging.Level))
+        {
+            Logging.Level = "Info";
+        }
+        else if (!LogLevelParser.TryParse(Logging.Level, out var consoleLevel))
+        {
+            warnings.Add($"Logging.Level='{Logging.Level}' 无效，已调整为 Info。");
+            Logging.Level = "Info";
+        }
+        else
+        {
+            Logging.Level = LogLevelParser.ToDisplayName(consoleLevel);
+        }
+
+        if (string.IsNullOrWhiteSpace(Logging.FileLevel))
+        {
+            Logging.FileLevel = Logging.Level;
+        }
+        else if (!LogLevelParser.TryParse(Logging.FileLevel, out var fileLevel))
+        {
+            warnings.Add($"Logging.FileLevel='{Logging.FileLevel}' 无效，已调整为 {Logging.Level}。");
+            Logging.FileLevel = Logging.Level;
+        }
+        else
+        {
+            Logging.FileLevel = LogLevelParser.ToDisplayName(fileLevel);
+        }
+
+        if (!string.IsNullOrWhiteSpace(Logging.FilePath))
+        {
+            Logging.FilePath = Logging.FilePath.Trim();
         }
 
         if (Bot.CastDurationMs < 0)

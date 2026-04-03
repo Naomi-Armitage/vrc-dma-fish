@@ -18,12 +18,11 @@ public static class Program
 
         if (options.DashboardClientSnapshotPath is not null)
         {
-            Logger.Configure(false, null, enableConsole: false);
+            Logger.Configure(LogLevel.None, null, enableConsole: false);
             return RunDashboardClient(options.DashboardClientSnapshotPath);
         }
 
-        Logger.Configure(options.DebugEnabled, ResolveLogFilePath(options.LogFilePath));
-        Logger.Debug("系统", "Debug 模式已开启。");
+        Logger.Configure(options.GetBootstrapConsoleLevel(), null, options.GetBootstrapFileLevel());
 
         var configPath = Path.GetFullPath(options.ConfigPath);
 
@@ -38,7 +37,10 @@ public static class Program
             return 1;
         }
 
-        foreach (var warning in config.Normalize())
+        var normalizeWarnings = config.Normalize();
+        ApplyLoggingConfiguration(config, options);
+
+        foreach (var warning in normalizeWarnings)
         {
             Logger.Warn("配置", warning);
         }
@@ -48,7 +50,10 @@ public static class Program
             try
             {
                 config = ConfigWizard.Run(config, configPath);
-                foreach (var warning in config.Normalize())
+                normalizeWarnings = config.Normalize();
+                ApplyLoggingConfiguration(config, options);
+
+                foreach (var warning in normalizeWarnings)
                 {
                     Logger.Warn("配置", warning);
                 }
@@ -76,7 +81,7 @@ public static class Program
         {
             if (options.UseSeparateUiWindow && IsInteractiveConsole() && OperatingSystem.IsWindows())
             {
-                dashboardWriter = TryStartDashboardWindow(options.DebugEnabled);
+                dashboardWriter = TryStartDashboardWindow();
             }
 
             using var input = CreateInputController(config.Input);
@@ -96,15 +101,15 @@ public static class Program
 
                 if (dashboardWriter is not null)
                 {
-                    RunSeparateDashboardLoop(bot, config, options.MaxTicks, () => cancelled, dashboardWriter, options.DebugEnabled);
+                    RunSeparateDashboardLoop(bot, config, options.MaxTicks, () => cancelled, dashboardWriter);
                 }
                 else if (IsInteractiveConsole())
                 {
-                    RunInlineDashboardLoop(bot, config, options.MaxTicks, () => cancelled, options.DebugEnabled);
+                    RunInlineDashboardLoop(bot, config, options.MaxTicks, () => cancelled);
                 }
                 else
                 {
-                    RunPlainLoop(bot, config, options.MaxTicks, () => cancelled, options.DebugEnabled);
+                    RunPlainLoop(bot, config, options.MaxTicks, () => cancelled);
                 }
 
                 return 0;
@@ -133,7 +138,8 @@ public static class Program
                 dashboardWriter.Write(
                     Dashboard.CreateDisconnectedSnapshot(
                         "主程序已退出，调试输出请查看主窗口或日志文件。",
-                        options.DebugEnabled,
+                        Logger.ConsoleLevel,
+                        Logger.FileLevel,
                         Logger.LogFilePath));
                 dashboardWriter.Dispose();
             }
@@ -145,7 +151,7 @@ public static class Program
         !Console.IsInputRedirected &&
         !Console.IsOutputRedirected;
 
-    private static void RunInlineDashboardLoop(FishingBot bot, AppConfig config, int? maxTicks, Func<bool> shouldStop, bool debugEnabled)
+    private static void RunInlineDashboardLoop(FishingBot bot, AppConfig config, int? maxTicks, Func<bool> shouldStop)
     {
         var layout = Dashboard.CreateLayout();
         var ticksRemaining = maxTicks;
@@ -155,7 +161,15 @@ public static class Program
             while (!shouldStop() && (!ticksRemaining.HasValue || ticksRemaining > 0))
             {
                 bot.Tick();
-                Dashboard.Update(layout, Dashboard.CreateSnapshot(bot, config, debugEnabled, Logger.LogFilePath, isRunning: true));
+                Dashboard.Update(
+                    layout,
+                    Dashboard.CreateSnapshot(
+                        bot,
+                        config,
+                        Logger.ConsoleLevel,
+                        Logger.FileLevel,
+                        Logger.LogFilePath,
+                        isRunning: true));
                 ctx.Refresh();
                 Thread.Sleep(config.TickIntervalMs);
 
@@ -172,8 +186,7 @@ public static class Program
         AppConfig config,
         int? maxTicks,
         Func<bool> shouldStop,
-        DashboardSessionWriter dashboardWriter,
-        bool debugEnabled)
+        DashboardSessionWriter dashboardWriter)
     {
         var ticksRemaining = maxTicks;
         Logger.Info("UI", "独立监控窗口已启动，当前窗口将输出日志和 debug 信息。");
@@ -185,7 +198,8 @@ public static class Program
                 Dashboard.CreateSnapshot(
                     bot,
                     config,
-                    debugEnabled,
+                    Logger.ConsoleLevel,
+                    Logger.FileLevel,
                     Logger.LogFilePath,
                     isRunning: true,
                     statusNote: "主窗口输出日志和 debug 详细信息。"));
@@ -198,14 +212,21 @@ public static class Program
         }
     }
 
-    private static void RunPlainLoop(FishingBot bot, AppConfig config, int? maxTicks, Func<bool> shouldStop, bool debugEnabled)
+    private static void RunPlainLoop(FishingBot bot, AppConfig config, int? maxTicks, Func<bool> shouldStop)
     {
         var ticksRemaining = maxTicks;
 
         while (!shouldStop() && (!ticksRemaining.HasValue || ticksRemaining > 0))
         {
             bot.Tick();
-            Dashboard.Render(Dashboard.CreateSnapshot(bot, config, debugEnabled, Logger.LogFilePath, isRunning: true));
+            Dashboard.Render(
+                Dashboard.CreateSnapshot(
+                    bot,
+                    config,
+                    Logger.ConsoleLevel,
+                    Logger.FileLevel,
+                    Logger.LogFilePath,
+                    isRunning: true));
             Thread.Sleep(config.TickIntervalMs);
 
             if (ticksRemaining.HasValue)
@@ -218,7 +239,7 @@ public static class Program
     private static int RunDashboardClient(string snapshotPath)
     {
         var layout = Dashboard.CreateLayout();
-        var lastSnapshot = Dashboard.CreateDisconnectedSnapshot("等待主程序写入监控快照...", false, null);
+        var lastSnapshot = Dashboard.CreateDisconnectedSnapshot("等待主程序写入监控快照...", LogLevel.Info, LogLevel.None, null);
         try
         {
             AnsiConsole.Live(layout).AutoClear(false).Start(ctx =>
@@ -300,7 +321,7 @@ public static class Program
         return 0;
     }
 
-    private static DashboardSessionWriter? TryStartDashboardWindow(bool debugEnabled)
+    private static DashboardSessionWriter? TryStartDashboardWindow()
     {
         try
         {
@@ -317,7 +338,10 @@ public static class Program
                 UpdatedAtUtc = DateTime.UtcNow,
                 IsRunning = true,
                 StateText = "准备中",
-                DebugEnabled = debugEnabled,
+                ConsoleLogLevelText = Logger.GetLevelDisplayName(Logger.ConsoleLevel),
+                FileLogLevelText = Logger.LogFilePath is null
+                    ? "关闭"
+                    : Logger.GetLevelDisplayName(Logger.FileLevel),
                 LogFilePath = Logger.LogFilePath,
                 StatusNote = "独立监控窗口准备中...",
             });
@@ -375,11 +399,84 @@ public static class Program
 
     private static string EscapePowerShellSingleQuotedString(string value) => value.Replace("'", "''");
 
-    private static string ResolveLogFilePath(string? configuredPath)
+    private static void ApplyLoggingConfiguration(AppConfig config, RuntimeOptions options)
     {
-        if (!string.IsNullOrWhiteSpace(configuredPath))
+        var loggingSettings = ResolveLoggingSettings(config.Logging, options);
+        Logger.Configure(loggingSettings.ConsoleLevel, loggingSettings.LogFilePath, loggingSettings.FileLevel);
+
+        foreach (var warning in loggingSettings.Warnings)
         {
-            return Path.GetFullPath(configuredPath);
+            Logger.Warn("配置", warning);
+        }
+
+        if (Logger.IsDebugEnabled)
+        {
+            Logger.Debug(
+                "系统",
+                $"Debug 模式已开启。控制台日志级别={Logger.GetLevelDisplayName(Logger.ConsoleLevel)}，文件日志级别={Logger.GetLevelDisplayName(Logger.FileLevel)}。");
+        }
+    }
+
+    private static ResolvedLoggingSettings ResolveLoggingSettings(LoggingConfig config, RuntimeOptions options)
+    {
+        var warnings = new List<string>();
+        var consoleLevel = !string.IsNullOrWhiteSpace(options.LogLevelText)
+            ? ResolveCliLogLevel(options.LogLevelText, LogLevel.Info, "--log-level", warnings)
+            : options.DebugEnabled
+                ? LogLevel.Debug
+                : ResolveConfiguredLogLevel(config.Level, LogLevel.Info, "Logging.Level", warnings);
+
+        var fileLevel = !string.IsNullOrWhiteSpace(options.FileLogLevelText)
+            ? ResolveCliLogLevel(options.FileLogLevelText, consoleLevel, "--file-log-level", warnings)
+            : options.DebugEnabled
+                ? LogLevel.Debug
+                : ResolveConfiguredLogLevel(config.FileLevel, consoleLevel, "Logging.FileLevel", warnings);
+
+        var logFilePath = ResolveLogFilePath(options.LogFilePath, config.FilePath, fileLevel);
+        return new ResolvedLoggingSettings(consoleLevel, fileLevel, logFilePath, warnings);
+    }
+
+    private static LogLevel ResolveCliLogLevel(string cliText, LogLevel defaultLevel, string cliName, List<string> warnings)
+    {
+        if (LogLevelParser.TryParse(cliText, out var cliLevel))
+        {
+            return cliLevel;
+        }
+
+        warnings.Add($"{cliName}='{cliText}' 无效，已回退为 {LogLevelParser.ToDisplayName(defaultLevel)}。");
+        return defaultLevel;
+    }
+
+    private static LogLevel ResolveConfiguredLogLevel(
+        string? configText,
+        LogLevel defaultLevel,
+        string configName,
+        List<string> warnings)
+    {
+        if (!string.IsNullOrWhiteSpace(configText))
+        {
+            if (LogLevelParser.TryParse(configText, out var configLevel))
+            {
+                return configLevel;
+            }
+
+            warnings.Add($"{configName}='{configText}' 无效，已回退为 {LogLevelParser.ToDisplayName(defaultLevel)}。");
+        }
+
+        return defaultLevel;
+    }
+
+    private static string? ResolveLogFilePath(string? cliPath, string? configuredPath, LogLevel fileLevel)
+    {
+        if (fileLevel == LogLevel.None)
+        {
+            return null;
+        }
+
+        var resolvedPath = !string.IsNullOrWhiteSpace(cliPath) ? cliPath : configuredPath;
+        if (!string.IsNullOrWhiteSpace(resolvedPath))
+        {
+            return Path.GetFullPath(resolvedPath);
         }
 
         var logDirectory = Path.Combine(Directory.GetCurrentDirectory(), "logs");
@@ -452,6 +549,8 @@ public static class Program
         int? MaxTicks,
         bool RunWizard,
         bool DebugEnabled,
+        string? LogLevelText,
+        string? FileLogLevelText,
         string? LogFilePath,
         bool UseSeparateUiWindow,
         string? DashboardClientSnapshotPath,
@@ -463,6 +562,8 @@ public static class Program
             int? maxTicks = null;
             var runWizard = true;
             var debugEnabled = false;
+            string? logLevelText = null;
+            string? fileLogLevelText = null;
             string? logFilePath = null;
             var useSeparateUiWindow = true;
             string? dashboardClientSnapshotPath = null;
@@ -493,6 +594,18 @@ public static class Program
                 if (string.Equals(args[i], "--debug", StringComparison.OrdinalIgnoreCase))
                 {
                     debugEnabled = true;
+                    continue;
+                }
+
+                if (string.Equals(args[i], "--log-level", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                {
+                    logLevelText = args[++i];
+                    continue;
+                }
+
+                if (string.Equals(args[i], "--file-log-level", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                {
+                    fileLogLevelText = args[++i];
                     continue;
                 }
 
@@ -548,10 +661,43 @@ public static class Program
                 maxTicks,
                 runWizard,
                 debugEnabled,
+                logLevelText,
+                fileLogLevelText,
                 logFilePath,
                 useSeparateUiWindow,
                 dashboardClientSnapshotPath,
                 dumpObjectsLimit);
         }
+
+        public LogLevel GetBootstrapConsoleLevel()
+        {
+            if (!string.IsNullOrWhiteSpace(LogLevelText) && LogLevelParser.TryParse(LogLevelText, out var configuredLevel))
+            {
+                return configuredLevel;
+            }
+
+            return DebugEnabled ? LogLevel.Debug : LogLevel.Info;
+        }
+
+        public LogLevel GetBootstrapFileLevel()
+        {
+            if (!string.IsNullOrWhiteSpace(FileLogLevelText) && LogLevelParser.TryParse(FileLogLevelText, out var configuredFileLevel))
+            {
+                return configuredFileLevel;
+            }
+
+            if (!string.IsNullOrWhiteSpace(LogLevelText) && LogLevelParser.TryParse(LogLevelText, out var configuredLevel))
+            {
+                return configuredLevel;
+            }
+
+            return DebugEnabled ? LogLevel.Debug : LogLevel.Info;
+        }
     }
+
+    private sealed record ResolvedLoggingSettings(
+        LogLevel ConsoleLevel,
+        LogLevel FileLevel,
+        string? LogFilePath,
+        IReadOnlyList<string> Warnings);
 }

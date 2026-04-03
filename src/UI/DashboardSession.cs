@@ -20,7 +20,8 @@ public sealed class DashboardSnapshot
     public float? FishCenterY { get; set; }
     public float? BarCenterY { get; set; }
     public float? BarHeight { get; set; }
-    public bool DebugEnabled { get; set; }
+    public string ConsoleLogLevelText { get; set; } = "Info";
+    public string FileLogLevelText { get; set; } = "Info";
     public string? LogFilePath { get; set; }
     public string? StatusNote { get; set; }
 }

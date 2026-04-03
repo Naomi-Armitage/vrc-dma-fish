@@ -55,13 +55,19 @@ dotnet run --project VrcDmaFish.csproj -- --dump-objects 128 --debug --no-wizard
 ```
 
 - `--debug`：开启详细日志，包含状态切换、DMA 初始化、Unity 扫描细节。
+- `--log-level <debug|info|warn|error|none>`：控制台日志等级；排查 DMA 时推荐先用 `warn`，只看关键告警。
+- `--file-log-level <debug|info|warn|error|none>`：日志文件等级；可以把控制台设成 `warn`，文件保留 `info` 或 `debug`。
 - `--no-ui-window`：不拉起独立监控窗口，直接在当前控制台显示状态。
 - `--dump-objects [数量]`：尝试转储 Unity 对象名，便于确认 `FishingLogic` 真实对象名和 `GameObjectManager` 是否有效。
-- `--log-file 路径`：自定义日志文件位置；默认会写到仓库下的 `logs\` 目录。
+- `--log-file 路径`：自定义日志文件位置；默认会写到仓库下的 `logs\` 目录，若文件日志等级设为 `none` 则不生成日志文件。
 
 ## 配置说明
 
 默认配置文件是 [appsettings.json](/C:/Users/Administrator/Documents/vrc-dma-fish/appsettings.json)。和点击策略相关的参数包括：
+
+- `Logging.Level`：控制台日志等级，支持 `Debug / Info / Warn / Error / None`。
+- `Logging.FileLevel`：文件日志等级；适合把主窗口压到 `Warn`，同时把文件保留在 `Info` 或 `Debug`。
+- `Logging.FilePath`：日志文件输出路径；不填时默认写入 `logs\`。
 
 - `HookClickMs`：咬钩确认点击时长。
 - `ReelPulseMs`：基础收线按住时长。

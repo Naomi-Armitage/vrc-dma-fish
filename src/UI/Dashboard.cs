@@ -17,7 +17,8 @@ public static class Dashboard
     public static DashboardSnapshot CreateSnapshot(
         FishingBot bot,
         AppConfig config,
-        bool debugEnabled,
+        LogLevel consoleLevel,
+        LogLevel fileLevel,
         string? logFilePath,
         bool isRunning,
         string? statusNote = null)
@@ -38,20 +39,30 @@ public static class Dashboard
             FishCenterY = bot.LastContext.FishCenterY,
             BarCenterY = bot.LastContext.BarCenterY,
             BarHeight = bot.LastContext.BarHeight,
-            DebugEnabled = debugEnabled,
+            ConsoleLogLevelText = LogLevelParser.ToDisplayName(consoleLevel),
+            FileLogLevelText = string.IsNullOrWhiteSpace(logFilePath)
+                ? "关闭"
+                : LogLevelParser.ToDisplayName(fileLevel),
             LogFilePath = logFilePath,
             StatusNote = statusNote,
         };
     }
 
-    public static DashboardSnapshot CreateDisconnectedSnapshot(string statusNote, bool debugEnabled, string? logFilePath)
+    public static DashboardSnapshot CreateDisconnectedSnapshot(
+        string statusNote,
+        LogLevel consoleLevel,
+        LogLevel fileLevel,
+        string? logFilePath)
     {
         return new DashboardSnapshot
         {
             UpdatedAtUtc = DateTime.UtcNow,
             IsRunning = false,
             StateText = "已停止",
-            DebugEnabled = debugEnabled,
+            ConsoleLogLevelText = LogLevelParser.ToDisplayName(consoleLevel),
+            FileLogLevelText = string.IsNullOrWhiteSpace(logFilePath)
+                ? "关闭"
+                : LogLevelParser.ToDisplayName(fileLevel),
             LogFilePath = logFilePath,
             StatusNote = statusNote,
         };
@@ -69,7 +80,8 @@ public static class Dashboard
         statusTable.AddRow("运行状态", snapshot.IsRunning ? "[green]运行中[/]" : "[grey]已停止[/]");
         statusTable.AddRow("机器人状态", $"[bold yellow]{Safe(snapshot.StateText)}[/]");
         statusTable.AddRow("状态时长", $"[grey]{snapshot.StateElapsedSeconds:F1}s[/]");
-        statusTable.AddRow("Debug 模式", snapshot.DebugEnabled ? "[yellow]开启[/]" : "[grey]关闭[/]");
+        statusTable.AddRow("控制台日志", $"[yellow]{Safe(snapshot.ConsoleLogLevelText)}[/]");
+        statusTable.AddRow("文件日志", $"[yellow]{Safe(snapshot.FileLogLevelText)}[/]");
 
         layout["Left"].Update(
             new Panel(statusTable)
