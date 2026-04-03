@@ -1,6 +1,7 @@
 using System.Runtime.Versioning;
 using System.Text;
 using Vmmsharp;
+using VrcDmaFish.Models;
 using VrcDmaFish.UI;
 
 namespace VrcDmaFish.Providers;
@@ -39,10 +40,12 @@ public sealed class UnityScanner
     };
 
     private readonly VmmProcess _process;
+    private readonly UnityNativeLayout _layout;
 
-    public UnityScanner(VmmProcess process)
+    public UnityScanner(VmmProcess process, UnityNativeLayout layout)
     {
         _process = process;
+        _layout = layout;
     }
 
     public ulong FindGameObjectManager(IReadOnlyList<string>? configuredPatterns = null)
@@ -174,15 +177,15 @@ public sealed class UnityScanner
             return 0;
         }
 
-        var currentNode = ReadUInt64(gameObjectManagerAddress + 0x10);
+        var currentNode = ReadUInt64(gameObjectManagerAddress + _layout.GameObjectManagerActiveNodesOffset);
         var remainingNodes = 1024;
 
         while (currentNode != 0 && remainingNodes-- > 0)
         {
-            var gameObject = ReadUInt64(currentNode + 0x10);
+            var gameObject = ReadUInt64(currentNode + _layout.ObjectNodeGameObjectOffset);
             if (gameObject != 0)
             {
-                var namePtr = ReadUInt64(gameObject + 0x30);
+                var namePtr = ReadUInt64(gameObject + _layout.GameObjectNamePointerOffset);
                 var objectName = ReadString(namePtr);
                 if (!string.IsNullOrWhiteSpace(objectName) &&
                     objectName.Contains(name, StringComparison.OrdinalIgnoreCase))
@@ -192,7 +195,7 @@ public sealed class UnityScanner
                 }
             }
 
-            currentNode = ReadUInt64(currentNode + 0x8);
+            currentNode = ReadUInt64(currentNode + _layout.ObjectNodeNextOffset);
         }
 
         Logger.Warn("扫描", $"未找到 GameObject '{name}'。");
@@ -217,20 +220,20 @@ public sealed class UnityScanner
         }
 
         var objects = new List<UnityObjectInfo>();
-        var currentNode = ReadUInt64(gameObjectManagerAddress + 0x10);
+        var currentNode = ReadUInt64(gameObjectManagerAddress + _layout.GameObjectManagerActiveNodesOffset);
         var remainingNodes = Math.Max(limit * 4, 256);
 
         while (currentNode != 0 && remainingNodes-- > 0 && objects.Count < limit)
         {
-            var gameObject = ReadUInt64(currentNode + 0x10);
+            var gameObject = ReadUInt64(currentNode + _layout.ObjectNodeGameObjectOffset);
             if (gameObject != 0)
             {
-                var namePtr = ReadUInt64(gameObject + 0x30);
+                var namePtr = ReadUInt64(gameObject + _layout.GameObjectNamePointerOffset);
                 var objectName = ReadString(namePtr);
                 objects.Add(new UnityObjectInfo(currentNode, gameObject, namePtr, objectName));
             }
 
-            currentNode = ReadUInt64(currentNode + 0x8);
+            currentNode = ReadUInt64(currentNode + _layout.ObjectNodeNextOffset);
         }
 
         Logger.Debug("扫描", $"对象转储完成，共收集 {objects.Count} 个对象。");
@@ -383,13 +386,13 @@ public sealed class UnityScanner
             return new GameObjectManagerValidationResult(false, 0, string.Empty, "候选地址不像有效指针。");
         }
 
-        if (!TryReadUInt64(managerAddress + 0x10, out var currentNode))
+        if (!TryReadUInt64(managerAddress + _layout.GameObjectManagerActiveNodesOffset, out var currentNode))
         {
             return new GameObjectManagerValidationResult(
                 false,
                 0,
                 string.Empty,
-                "读取 manager+0x10 失败。");
+                $"读取 manager+0x{_layout.GameObjectManagerActiveNodesOffset:X} 失败。");
         }
 
         if (!IsLikelyPointer(currentNode))
@@ -398,7 +401,7 @@ public sealed class UnityScanner
                 false,
                 0,
                 string.Empty,
-                $"manager+0x10=0x{currentNode:X} 不是有效节点指针。",
+                $"manager+0x{_layout.GameObjectManagerActiveNodesOffset:X}=0x{currentNode:X} 不是有效节点指针。",
                 FirstNodeAddress: currentNode);
         }
 
@@ -417,7 +420,7 @@ public sealed class UnityScanner
                 break;
             }
 
-            if (!TryReadUInt64(currentNode + 0x10, out var gameObject))
+            if (!TryReadUInt64(currentNode + _layout.ObjectNodeGameObjectOffset, out var gameObject))
             {
                 break;
             }
@@ -430,7 +433,7 @@ public sealed class UnityScanner
 
             firstGameObjectAddress ??= gameObject;
 
-            if (!TryReadUInt64(gameObject + 0x30, out var namePointer))
+            if (!TryReadUInt64(gameObject + _layout.GameObjectNamePointerOffset, out var namePointer))
             {
                 break;
             }
@@ -454,7 +457,7 @@ public sealed class UnityScanner
                 score += 1;
             }
 
-            if (!TryReadUInt64(currentNode + 0x8, out currentNode))
+            if (!TryReadUInt64(currentNode + _layout.ObjectNodeNextOffset, out currentNode))
             {
                 currentNode = 0;
                 break;
@@ -466,11 +469,11 @@ public sealed class UnityScanner
             var failureReason = firstObjectName is not null && !IsPlausibleObjectName(firstObjectName)
                 ? $"namePtr=0x{firstNamePointer ?? 0:X} 读取到的对象名无效: '{TrimForLog(firstObjectName)}'。"
                 : firstGameObjectAddress.HasValue && !firstNamePointer.HasValue
-                    ? $"读取 gameObject+0x30 失败，gameObject=0x{firstGameObjectAddress.Value:X}。"
+                    ? $"读取 gameObject+0x{_layout.GameObjectNamePointerOffset:X} 失败，gameObject=0x{firstGameObjectAddress.Value:X}。"
                     : firstGameObjectAddress.HasValue && !IsLikelyPointer(firstGameObjectAddress.Value)
-                        ? $"node+0x10=0x{firstGameObjectAddress.Value:X} 不是有效 GameObject 指针。"
+                        ? $"node+0x{_layout.ObjectNodeGameObjectOffset:X}=0x{firstGameObjectAddress.Value:X} 不是有效 GameObject 指针。"
                         : currentNode != 0
-                            ? $"读取 node+0x10 失败，node=0x{currentNode:X}。"
+                            ? $"读取 node+0x{_layout.ObjectNodeGameObjectOffset:X} 失败，node=0x{currentNode:X}。"
                             : "对象链可遍历，但未读到任何合理对象名。";
 
             return new GameObjectManagerValidationResult(

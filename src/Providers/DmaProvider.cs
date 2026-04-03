@@ -54,7 +54,7 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
 
             if (!_config.TryGetTargetObjectAddress(out _targetObjectAddr))
             {
-                var scanner = new UnityScanner(_process);
+                var scanner = new UnityScanner(_process, _config.GetUnityNativeLayout());
                 var gameObjectManagerAddress = 0UL;
                 if (_config.TryGetGameObjectManagerAddress(out var configuredGameObjectManagerAddress))
                 {
@@ -79,6 +79,25 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
             }
 
             Logger.Debug("DMA", $"最终目标对象地址 0x{_targetObjectAddr:X}。");
+            ResolvedIl2CppInspectorLayout? il2CppLayout = null;
+            Il2CppInspectorFieldSelection? il2CppSelection = null;
+
+            if (_config.TryGetIl2CppInspectorProSelection(out var configuredIl2CppSelection))
+            {
+                il2CppSelection = configuredIl2CppSelection;
+                var il2CppResolver = new Il2CppInspectorProResolver();
+                if (il2CppResolver.TryResolve(configuredIl2CppSelection, out var resolvedLayout, out var failureReason))
+                {
+                    il2CppLayout = resolvedLayout;
+                    Logger.Info(
+                        "DMA",
+                        $"已加载 Il2CppInspectorPro 布局：type={resolvedLayout.TypeName}, source={resolvedLayout.SourcePath}。");
+                }
+                else
+                {
+                    Logger.Warn("DMA", $"Il2CppInspectorPro 自动偏移解析失败：{failureReason}");
+                }
+            }
 
             if (_config.TryGetSignalOffsets(out var offsets))
             {
@@ -87,11 +106,23 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
                     "DMA",
                     $"使用配置中的偏移：hooked=0x{offsets.HookedOffset:X}, catch=0x{offsets.CatchCompletedOffset:X}, tension=0x{offsets.TensionOffset:X}。");
             }
+            else if (TryResolveSignalOffsetsFromIl2CppInspectorPro(il2CppLayout, il2CppSelection, out offsets, out var signalSource))
+            {
+                _offsets = offsets;
+                Logger.Info(
+                    "DMA",
+                    $"使用 Il2CppInspectorPro 导出的偏移：hooked=0x{offsets.HookedOffset:X}, catch=0x{offsets.CatchCompletedOffset:X}, tension=0x{offsets.TensionOffset:X}（{signalSource}）。");
+            }
             else
             {
                 if (_config.TryGetTensionOffset(out var configuredTensionOffset))
                 {
                     _fallbackTensionOffset = configuredTensionOffset;
+                }
+                else if (TryResolveTensionOffsetFromIl2CppInspectorPro(il2CppLayout, il2CppSelection, out var resolvedTensionOffset, out var tensionSource))
+                {
+                    _fallbackTensionOffset = resolvedTensionOffset;
+                    Logger.Info("DMA", $"已从 Il2CppInspectorPro 解析张力偏移 0x{_fallbackTensionOffset:X}（{tensionSource}）。");
                 }
 
                 Logger.Warn(
@@ -112,6 +143,28 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
                 Logger.Info(
                     "DMA",
                     $"已启用位置控制偏移：fish=0x{barRangeOffsets.FishPositionOffset:X}, barTop=0x{barRangeOffsets.BarTopOffset:X}, barBottom=0x{barRangeOffsets.BarBottomOffset:X}。");
+            }
+            else if (TryResolvePositionOffsetsFromIl2CppInspectorPro(
+                         il2CppLayout,
+                         il2CppSelection,
+                         out var il2CppPositionOffsets,
+                         out var positionSource))
+            {
+                _positionOffsets = il2CppPositionOffsets;
+                Logger.Info(
+                    "DMA",
+                    $"已从 Il2CppInspectorPro 启用位置控制偏移：fish=0x{il2CppPositionOffsets.FishPositionOffset:X}, barCenter=0x{il2CppPositionOffsets.BarCenterOffset:X}, barHeight=0x{il2CppPositionOffsets.BarHeightOffset:X}（{positionSource}）。");
+            }
+            else if (TryResolveBarRangeOffsetsFromIl2CppInspectorPro(
+                         il2CppLayout,
+                         il2CppSelection,
+                         out var il2CppBarRangeOffsets,
+                         out var barRangeSource))
+            {
+                _barRangeOffsets = il2CppBarRangeOffsets;
+                Logger.Info(
+                    "DMA",
+                    $"已从 Il2CppInspectorPro 启用位置控制偏移：fish=0x{il2CppBarRangeOffsets.FishPositionOffset:X}, barTop=0x{il2CppBarRangeOffsets.BarTopOffset:X}, barBottom=0x{il2CppBarRangeOffsets.BarBottomOffset:X}（{barRangeSource}）。");
             }
             else
             {
@@ -358,6 +411,130 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
             : trimmed;
     }
 
+    private static bool TryResolveSignalOffsetsFromIl2CppInspectorPro(
+        ResolvedIl2CppInspectorLayout? layout,
+        Il2CppInspectorFieldSelection? selection,
+        out SignalOffsets offsets,
+        out string sourceDescription)
+    {
+        offsets = default;
+        sourceDescription = string.Empty;
+
+        if (layout is null || selection is null)
+        {
+            return false;
+        }
+
+        var value = selection.Value;
+        if (!TryResolveInstanceFieldOffset(layout, value.HookedFieldName, out var hookedOffset) ||
+            !TryResolveInstanceFieldOffset(layout, value.CatchCompletedFieldName, out var catchCompletedOffset) ||
+            !TryResolveInstanceFieldOffset(layout, value.TensionFieldName, out var tensionOffset))
+        {
+            return false;
+        }
+
+        offsets = new SignalOffsets(hookedOffset, catchCompletedOffset, tensionOffset);
+        sourceDescription = Path.GetFileName(layout.SourcePath);
+        return true;
+    }
+
+    private static bool TryResolveTensionOffsetFromIl2CppInspectorPro(
+        ResolvedIl2CppInspectorLayout? layout,
+        Il2CppInspectorFieldSelection? selection,
+        out ulong tensionOffset,
+        out string sourceDescription)
+    {
+        tensionOffset = 0;
+        sourceDescription = string.Empty;
+
+        if (layout is null || selection is null)
+        {
+            return false;
+        }
+
+        if (!TryResolveInstanceFieldOffset(layout, selection.Value.TensionFieldName, out tensionOffset))
+        {
+            return false;
+        }
+
+        sourceDescription = Path.GetFileName(layout.SourcePath);
+        return true;
+    }
+
+    private static bool TryResolvePositionOffsetsFromIl2CppInspectorPro(
+        ResolvedIl2CppInspectorLayout? layout,
+        Il2CppInspectorFieldSelection? selection,
+        out PositionOffsets offsets,
+        out string sourceDescription)
+    {
+        offsets = default;
+        sourceDescription = string.Empty;
+
+        if (layout is null || selection is null)
+        {
+            return false;
+        }
+
+        var value = selection.Value;
+        if (!TryResolveInstanceFieldOffset(layout, value.FishPositionFieldName, out var fishOffset) ||
+            !TryResolveInstanceFieldOffset(layout, value.BarCenterFieldName, out var barCenterOffset) ||
+            !TryResolveInstanceFieldOffset(layout, value.BarHeightFieldName, out var barHeightOffset))
+        {
+            return false;
+        }
+
+        offsets = new PositionOffsets(fishOffset, barCenterOffset, barHeightOffset);
+        sourceDescription = Path.GetFileName(layout.SourcePath);
+        return true;
+    }
+
+    private static bool TryResolveBarRangeOffsetsFromIl2CppInspectorPro(
+        ResolvedIl2CppInspectorLayout? layout,
+        Il2CppInspectorFieldSelection? selection,
+        out BarRangeOffsets offsets,
+        out string sourceDescription)
+    {
+        offsets = default;
+        sourceDescription = string.Empty;
+
+        if (layout is null || selection is null)
+        {
+            return false;
+        }
+
+        var value = selection.Value;
+        if (!TryResolveInstanceFieldOffset(layout, value.FishPositionFieldName, out var fishOffset) ||
+            !TryResolveInstanceFieldOffset(layout, value.BarTopFieldName, out var barTopOffset) ||
+            !TryResolveInstanceFieldOffset(layout, value.BarBottomFieldName, out var barBottomOffset))
+        {
+            return false;
+        }
+
+        offsets = new BarRangeOffsets(fishOffset, barTopOffset, barBottomOffset);
+        sourceDescription = Path.GetFileName(layout.SourcePath);
+        return true;
+    }
+
+    private static bool TryResolveInstanceFieldOffset(
+        ResolvedIl2CppInspectorLayout layout,
+        string? configuredFieldName,
+        out ulong offset)
+    {
+        offset = 0;
+        if (string.IsNullOrWhiteSpace(configuredFieldName))
+        {
+            return false;
+        }
+
+        if (!layout.TryGetField(configuredFieldName, out var field) || field.IsStatic)
+        {
+            return false;
+        }
+
+        offset = field.Offset;
+        return true;
+    }
+
     public ulong ResolveGameObjectManagerAddress()
     {
         if (!HasConnectedProcess || _process is null)
@@ -370,7 +547,7 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
             return configuredAddress;
         }
 
-        var scanner = new UnityScanner(_process);
+        var scanner = new UnityScanner(_process, _config.GetUnityNativeLayout());
         return scanner.FindGameObjectManager(_config.GetGameObjectManagerPatternCandidates());
     }
 
@@ -381,7 +558,7 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
             return Array.Empty<UnityObjectInfo>();
         }
 
-        var scanner = new UnityScanner(_process);
+        var scanner = new UnityScanner(_process, _config.GetUnityNativeLayout());
         var gameObjectManagerAddress = ResolveGameObjectManagerAddress();
         Logger.Debug("DMA", $"对象转储使用的 GameObjectManager 地址 0x{gameObjectManagerAddress:X}。");
         return scanner.DumpObjects(limit, gameObjectManagerAddress, _config.GetGameObjectManagerPatternCandidates());
@@ -394,7 +571,7 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
             return Array.Empty<GameObjectManagerProbeResult>();
         }
 
-        var scanner = new UnityScanner(_process);
+        var scanner = new UnityScanner(_process, _config.GetUnityNativeLayout());
         return scanner.ProbeGameObjectManagerCandidates(_config.GetGameObjectManagerPatternCandidates(), limit);
     }
 }

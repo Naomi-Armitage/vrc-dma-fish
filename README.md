@@ -14,6 +14,15 @@
   - 当 `FishPositionOffset` 和白条位置偏移可用时，优先按“让白条包住鱼图标”的方式控制。
   - 支持两种内存布局：`鱼位置 + 白条中心/高度`，或 `鱼位置 + 白条上边界/下边界`。
   - 若位置偏移未配置，自动回退到原先的张力控制，不强依赖屏幕识别。
+- Unity 对象遍历默认切到 Unity 2022.3.x 的 Native `activeObjectNodes` 链表：
+  - `GameObjectManager.activeObjectNodes = 0x28`
+  - `ObjectNode.next = 0x08`，`ObjectNode.gameObject = 0x10`
+  - `GameObject.namePtr = 0x60`
+  - 上述偏移都支持配置覆盖，方便后续版本漂移时微调。
+- 新增 `Il2CppInspectorPro` 导出接入：
+  - 可直接读取 `Il2CppInspectorPro` 导出的 C# stub（单个 `types.cs` 或整个导出目录）。
+  - 通过“目标类型名 + 字段名”自动解析实例字段偏移，减少手动静态提取和硬编码。
+  - 手填偏移仍然保留，并且优先级高于自动解析，便于临时热修。
 - 汉化程序入口、配置向导、实时面板和安装脚本输出。
 
 ## 快速开始
@@ -61,6 +70,20 @@ dotnet run --project VrcDmaFish.csproj -- --dump-objects 128 --debug --no-wizard
 - `--dump-objects [数量]`：尝试转储 Unity 对象名，便于确认 `FishingLogic` 真实对象名和 `GameObjectManager` 是否有效。
 - `--log-file 路径`：自定义日志文件位置；默认会写到仓库下的 `logs\` 目录，若文件日志等级设为 `none` 则不生成日志文件。
 
+## Il2CppInspectorPro 工作流
+
+静态手填偏移不稳定时，推荐改成下面这条链路：
+
+1. 用 `Il2CppInspectorPro` 对目标版本导出 C# stub。
+2. 在配置里填写导出文件路径（或导出目录）、目标类型名、以及你要读取的字段名。
+3. 程序启动时会优先读取手填偏移；如果没填，再从 `Il2CppInspectorPro` 导出结果里自动解析。
+
+注意：
+
+- `Il2CppInspectorPro` 这条链路只负责解析字段偏移，例如 `tension`、`fishPosition`、`barCenter`。
+- `GameObjectManager` / `TargetObjectAddress` 仍然属于运行时对象定位，继续走特征扫描或手填地址。
+- 当前解析器读取的是 C# stub 中的实例字段偏移属性，因此字段名要和导出结果里的声明一致。
+
 ## 配置说明
 
 默认配置文件是 [appsettings.json](/C:/Users/Administrator/Documents/vrc-dma-fish/appsettings.json)。和点击策略相关的参数包括：
@@ -82,12 +105,26 @@ dotnet run --project VrcDmaFish.csproj -- --dump-objects 128 --debug --no-wizard
 
 和 DMA 位置控制相关的偏移包括：
 
+- `Il2CppInspectorPro.CSharpOutputPath`：`Il2CppInspectorPro` 导出的 C# stub 路径；可以是单个 `types.cs`，也可以是导出目录。
+- `Il2CppInspectorPro.TargetTypeName`：目标类型名，例如 `FishingLogic`。
+- `Il2CppInspectorPro.HookedFieldName` / `CatchCompletedFieldName` / `TensionFieldName`：自动解析状态字段偏移。
+- `Il2CppInspectorPro.FishPositionFieldName` 搭配 `BarCenterFieldName` 与 `BarHeightFieldName`：解析“鱼位置 + 白条中心/高度”布局。
+- `Il2CppInspectorPro.FishPositionFieldName` 搭配 `BarTopFieldName` 与 `BarBottomFieldName`：解析“鱼位置 + 白条上下边界”布局。
 - `FishPositionOffset`
 - `BarCenterOffset` 与 `BarHeightOffset`
 - 或 `BarTopOffset` 与 `BarBottomOffset`
 - `GameObjectManagerPattern`：单条 GOM 特征码覆盖。
 - `GameObjectManagerPatterns`：多条 GOM 特征码候选，程序会按顺序尝试并自动校验对象链。
 - `GameObjectManagerAddress` / `TargetObjectAddress`：当自动扫描仍失效时，可直接手填地址绕过。
+- `GameObjectManagerActiveNodesOffset`：`GameObjectManager.activeObjectNodes` 的 Native 偏移，默认 `0x28`。
+- `ObjectNodePreviousOffset` / `ObjectNodeNextOffset` / `ObjectNodeGameObjectOffset`：链表节点布局，默认分别为 `0x00 / 0x08 / 0x10`。
+- `GameObjectNamePointerOffset`：`GameObject.namePtr` 的 Native 偏移，默认 `0x60`。
+
+偏移优先级如下：
+
+1. 手填 `HookedOffset` / `CatchCompletedOffset` / `TensionOffset` / 位置偏移
+2. `Il2CppInspectorPro` 导出的自动解析结果
+3. 仅张力模式默认回退（`TensionOffset` 未配置时使用内置默认值）
 
 ## 注意事项
 

@@ -29,6 +29,7 @@ public sealed class AppConfig
         config.Logging ??= new LoggingConfig();
         config.Input ??= new InputConfig();
         config.SignalSource ??= new SignalSourceConfig();
+        config.SignalSource.Il2CppInspectorPro ??= new Il2CppInspectorProConfig();
         config.Bot ??= new BotConfig();
         return config;
     }
@@ -212,6 +213,17 @@ public sealed class AppConfig
             SignalSource.TargetObjectName = "FishingLogic";
         }
 
+        SignalSource.Il2CppInspectorPro ??= new Il2CppInspectorProConfig();
+        if (!string.IsNullOrWhiteSpace(SignalSource.Il2CppInspectorPro.CSharpOutputPath))
+        {
+            SignalSource.Il2CppInspectorPro.CSharpOutputPath = SignalSource.Il2CppInspectorPro.CSharpOutputPath.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(SignalSource.Il2CppInspectorPro.TargetTypeName))
+        {
+            SignalSource.Il2CppInspectorPro.TargetTypeName = SignalSource.Il2CppInspectorPro.TargetTypeName.Trim();
+        }
+
         return warnings;
     }
 }
@@ -242,6 +254,12 @@ public sealed class SignalSourceConfig
     public string? BarHeightOffset { get; set; }
     public string? BarTopOffset { get; set; }
     public string? BarBottomOffset { get; set; }
+    public string? GameObjectManagerActiveNodesOffset { get; set; }
+    public string? ObjectNodePreviousOffset { get; set; }
+    public string? ObjectNodeNextOffset { get; set; }
+    public string? ObjectNodeGameObjectOffset { get; set; }
+    public string? GameObjectNamePointerOffset { get; set; }
+    public Il2CppInspectorProConfig? Il2CppInspectorPro { get; set; } = new();
 
     public bool TryGetGameObjectManagerAddress(out ulong address) => TryParseAddress(GameObjectManagerAddress, out address);
 
@@ -310,6 +328,63 @@ public sealed class SignalSourceConfig
         return true;
     }
 
+    public bool TryGetIl2CppInspectorProSelection(out Il2CppInspectorFieldSelection selection)
+    {
+        selection = default;
+
+        if (Il2CppInspectorPro is null ||
+            string.IsNullOrWhiteSpace(Il2CppInspectorPro.CSharpOutputPath) ||
+            string.IsNullOrWhiteSpace(Il2CppInspectorPro.TargetTypeName))
+        {
+            return false;
+        }
+
+        selection = new Il2CppInspectorFieldSelection(
+            Il2CppInspectorPro.CSharpOutputPath.Trim(),
+            Il2CppInspectorPro.TargetTypeName.Trim(),
+            NormalizeFieldName(Il2CppInspectorPro.HookedFieldName),
+            NormalizeFieldName(Il2CppInspectorPro.CatchCompletedFieldName),
+            NormalizeFieldName(Il2CppInspectorPro.TensionFieldName),
+            NormalizeFieldName(Il2CppInspectorPro.FishPositionFieldName),
+            NormalizeFieldName(Il2CppInspectorPro.BarCenterFieldName),
+            NormalizeFieldName(Il2CppInspectorPro.BarHeightFieldName),
+            NormalizeFieldName(Il2CppInspectorPro.BarTopFieldName),
+            NormalizeFieldName(Il2CppInspectorPro.BarBottomFieldName));
+        return true;
+    }
+
+    public UnityNativeLayout GetUnityNativeLayout()
+    {
+        var layout = UnityNativeLayout.Default;
+
+        if (TryParseAddress(GameObjectManagerActiveNodesOffset, out var activeNodesOffset))
+        {
+            layout = layout with { GameObjectManagerActiveNodesOffset = activeNodesOffset };
+        }
+
+        if (TryParseAddress(ObjectNodePreviousOffset, out var previousOffset))
+        {
+            layout = layout with { ObjectNodePreviousOffset = previousOffset };
+        }
+
+        if (TryParseAddress(ObjectNodeNextOffset, out var nextOffset))
+        {
+            layout = layout with { ObjectNodeNextOffset = nextOffset };
+        }
+
+        if (TryParseAddress(ObjectNodeGameObjectOffset, out var gameObjectOffset))
+        {
+            layout = layout with { ObjectNodeGameObjectOffset = gameObjectOffset };
+        }
+
+        if (TryParseAddress(GameObjectNamePointerOffset, out var namePointerOffset))
+        {
+            layout = layout with { GameObjectNamePointerOffset = namePointerOffset };
+        }
+
+        return layout;
+    }
+
     private static bool TryParseAddress(string? text, out ulong value)
     {
         value = 0;
@@ -340,8 +415,51 @@ public sealed class SignalSourceConfig
             patterns.Add(trimmed);
         }
     }
+
+    private static string? NormalizeFieldName(string? fieldName)
+    {
+        return string.IsNullOrWhiteSpace(fieldName)
+            ? null
+            : fieldName.Trim();
+    }
 }
 
 public readonly record struct SignalOffsets(ulong HookedOffset, ulong CatchCompletedOffset, ulong TensionOffset);
 public readonly record struct PositionOffsets(ulong FishPositionOffset, ulong BarCenterOffset, ulong BarHeightOffset);
 public readonly record struct BarRangeOffsets(ulong FishPositionOffset, ulong BarTopOffset, ulong BarBottomOffset);
+public readonly record struct UnityNativeLayout(
+    ulong GameObjectManagerActiveNodesOffset,
+    ulong ObjectNodePreviousOffset,
+    ulong ObjectNodeNextOffset,
+    ulong ObjectNodeGameObjectOffset,
+    ulong GameObjectNamePointerOffset)
+{
+    // Unity 2022.3.x native GameObjectManager / ObjectNode / GameObject defaults.
+    public static UnityNativeLayout Default { get; } = new(0x28, 0x00, 0x08, 0x10, 0x60);
+}
+
+public readonly record struct Il2CppInspectorFieldSelection(
+    string CSharpOutputPath,
+    string TargetTypeName,
+    string? HookedFieldName,
+    string? CatchCompletedFieldName,
+    string? TensionFieldName,
+    string? FishPositionFieldName,
+    string? BarCenterFieldName,
+    string? BarHeightFieldName,
+    string? BarTopFieldName,
+    string? BarBottomFieldName);
+
+public sealed class Il2CppInspectorProConfig
+{
+    public string? CSharpOutputPath { get; set; }
+    public string? TargetTypeName { get; set; }
+    public string? HookedFieldName { get; set; }
+    public string? CatchCompletedFieldName { get; set; }
+    public string? TensionFieldName { get; set; }
+    public string? FishPositionFieldName { get; set; }
+    public string? BarCenterFieldName { get; set; }
+    public string? BarHeightFieldName { get; set; }
+    public string? BarTopFieldName { get; set; }
+    public string? BarBottomFieldName { get; set; }
+}
