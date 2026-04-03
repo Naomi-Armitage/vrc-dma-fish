@@ -22,6 +22,7 @@ public static class Dashboard
         statusTable.AddRow("输入方式", $"[green]{GetInputTypeText(config.Input.Type)}[/]");
         statusTable.AddRow("连接地址", $"[yellow]{GetInputEndpoint(config)}[/]");
         statusTable.AddRow("信号来源", $"[green]{GetSignalSourceText(config.SignalSource.Type)}[/]");
+        statusTable.AddRow("位置控制", bot.LastContext.HasPositionData ? "[green]已就绪[/]" : "[grey]未就绪[/]");
         statusTable.AddRow("机器人状态", $"[bold yellow]{GetStateText(bot.State)}[/]");
         statusTable.AddRow("暂停阈值", $"[grey]{config.Bot.ReelTensionPauseThreshold:P0}[/]");
         statusTable.AddRow("恢复阈值", $"[grey]{config.Bot.ReelTensionResumeThreshold:P0}[/]");
@@ -42,11 +43,15 @@ public static class Dashboard
         var hookStatus = bot.LastContext.IsHooked
             ? "[bold red]鱼儿已咬钩[/]"
             : "[grey]等待鱼儿上钩...[/]";
+        var positionStatus = bot.LastContext.HasPositionData
+            ? $"[cyan]鱼[/] {bot.LastContext.FishCenterY:0.###}  [cyan]白条[/] {bot.LastContext.BarCenterY:0.###}  [cyan]高度[/] {bot.LastContext.BarHeight:0.###}"
+            : "[grey]当前位置数据未就绪，正在等待 DMA 位置偏移。[/]";
 
         layout["Right"].Update(
             new Panel(
                 new Rows(
                     new Padder(new Markup(hookStatus).Centered(), new Padding(0, 1)),
+                    new Padder(new Markup(positionStatus).Centered(), new Padding(0, 0, 0, 1)),
                     bar))
                 .Header("[bold cyan] 实时监控 [/]")
                 .BorderColor(Color.Cyan1));
@@ -54,8 +59,12 @@ public static class Dashboard
 
     public static void Render(FishingBot bot, AppConfig config)
     {
+        var positionText = bot.LastContext.HasPositionData
+            ? $"鱼={bot.LastContext.FishCenterY:0.###}, 白条={bot.LastContext.BarCenterY:0.###}, 高度={bot.LastContext.BarHeight:0.###}"
+            : "位置=未就绪";
+
         AnsiConsole.MarkupLine(
-            $"[cyan]状态：[/] {GetStateText(bot.State)} | [cyan]张力：[/] {Math.Clamp(bot.LastContext.Tension, 0f, 1f):P1} | [cyan]输入：[/] {GetInputTypeText(config.Input.Type)} | [cyan]信号：[/] {GetSignalSourceText(config.SignalSource.Type)}");
+            $"[cyan]状态：[/] {GetStateText(bot.State)} | [cyan]张力：[/] {Math.Clamp(bot.LastContext.Tension, 0f, 1f):P1} | [cyan]输入：[/] {GetInputTypeText(config.Input.Type)} | [cyan]信号：[/] {GetSignalSourceText(config.SignalSource.Type)} | [cyan]{positionText}[/]");
     }
 
     private static string GetInputEndpoint(AppConfig config)
@@ -94,8 +103,20 @@ public static class Dashboard
         return "模拟";
     }
 
-    private static string GetSignalSourceText(string? type) =>
-        string.Equals(type, "Dma", StringComparison.OrdinalIgnoreCase) ? "DMA" : "模拟";
+    private static string GetSignalSourceText(string? type)
+    {
+        if (string.Equals(type, "Dma", StringComparison.OrdinalIgnoreCase))
+        {
+            return "DMA";
+        }
+
+        if (string.Equals(type, "Screen", StringComparison.OrdinalIgnoreCase))
+        {
+            return "屏幕";
+        }
+
+        return "模拟";
+    }
 
     private static string GetStateText(FishState state) => state switch
     {

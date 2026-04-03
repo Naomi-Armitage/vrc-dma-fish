@@ -10,6 +10,10 @@
   - 咬钩后先执行一次短点击确认。
   - 收线时根据当前张力和张力变化速度动态调整按住时长。
   - 张力过高立即松开，回落到恢复阈值后再继续。
+- 新增 DMA 位置控制通路：
+  - 当 `FishPositionOffset` 和白条位置偏移可用时，优先按“让白条包住鱼图标”的方式控制。
+  - 支持两种内存布局：`鱼位置 + 白条中心/高度`，或 `鱼位置 + 白条上边界/下边界`。
+  - 若位置偏移未配置，自动回退到原先的张力控制，不强依赖屏幕识别。
 - 汉化程序入口、配置向导、实时面板和安装脚本输出。
 
 ## 快速开始
@@ -48,9 +52,20 @@ dotnet run
 - `ReelHoldGainMs`：张力偏差带来的按住时长修正。
 - `ReelVelocityDampingMs`：张力上升过快时的阻尼修正。
 - `ReelRestMs`：本轮不按时的休息时长。
+- `PositionBaseHoldMs` / `PositionHoldGainMs`：位置模式下的基础按住时长和误差增益。
+- `PositionVelocityDampingMs` / `PositionVelocitySmooth`：白条速度阻尼与速度平滑。
+- `PositionDeadZoneRatio`：鱼图标落在白条中部多少范围内时，仅保持基础力度。
+- `PositionPressMovesUp`：按住鼠标是否会让白条向上移动；若方向相反可改为 `false`。
+
+和 DMA 位置控制相关的偏移包括：
+
+- `FishPositionOffset`
+- `BarCenterOffset` 与 `BarHeightOffset`
+- 或 `BarTopOffset` 与 `BarBottomOffset`
 
 ## 注意事项
 
 - DMA 模式仅支持 Windows。
 - 如果 DMA 初始化失败，程序会自动回退到 Mock 信号源，方便先检查流程和输入链路。
+- 位置控制是否真正启用，取决于 DMA 是否能稳定读到鱼位置和白条位置；面板里会显示“位置控制 已就绪/未就绪”。
 - 如果本地目录里还有嵌套仓库副本，请移走，避免重复编译源码。

@@ -158,6 +158,7 @@ public static class Program
     {
         if (string.Equals(config.Type, "Mock", StringComparison.OrdinalIgnoreCase))
         {
+            config.Type = "Mock";
             return new MockFishSignalSource();
         }
 
@@ -166,21 +167,25 @@ public static class Program
             if (!OperatingSystem.IsWindows())
             {
                 Logger.Warn("配置", "DMA 模式仅支持 Windows，已回退到 Mock。");
+                config.Type = "Mock";
                 return new MockFishSignalSource();
             }
 
             var dmaProvider = new DmaProvider(config);
             if (dmaProvider.IsReady)
             {
+                config.Type = "Dma";
                 return dmaProvider;
             }
 
             Logger.Warn("配置", "DMA 信号源未就绪，已回退到 Mock。");
             dmaProvider.Dispose();
+            config.Type = "Mock";
             return new MockFishSignalSource();
         }
 
         Logger.Warn("配置", $"不支持的信号源 '{config.Type}'，已回退到 Mock。");
+        config.Type = "Mock";
         return new MockFishSignalSource();
     }
 

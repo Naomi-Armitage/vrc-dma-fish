@@ -5,7 +5,7 @@ namespace VrcDmaFish.Models;
 
 public sealed class AppConfig
 {
-    public int TickIntervalMs { get; set; } = 100;
+    public int TickIntervalMs { get; set; } = 60;
     public InputConfig Input { get; set; } = new();
     public SignalSourceConfig SignalSource { get; set; } = new();
     public BotConfig Bot { get; set; } = new();
@@ -95,6 +95,27 @@ public sealed class AppConfig
             Bot.ReelRestMs = 0;
         }
 
+        if (Bot.PositionBaseHoldMs < 0)
+        {
+            warnings.Add($"PositionBaseHoldMs={Bot.PositionBaseHoldMs} 无效，已调整为 0。");
+            Bot.PositionBaseHoldMs = 0;
+        }
+
+        if (Bot.PositionHoldGainMs < 0)
+        {
+            warnings.Add($"PositionHoldGainMs={Bot.PositionHoldGainMs} 无效，已调整为 0。");
+            Bot.PositionHoldGainMs = 0;
+        }
+
+        if (Bot.PositionVelocityDampingMs < 0)
+        {
+            warnings.Add($"PositionVelocityDampingMs={Bot.PositionVelocityDampingMs} 无效，已调整为 0。");
+            Bot.PositionVelocityDampingMs = 0;
+        }
+
+        Bot.PositionVelocitySmooth = Math.Clamp(Bot.PositionVelocitySmooth, 0d, 0.95d);
+        Bot.PositionDeadZoneRatio = Math.Clamp(Bot.PositionDeadZoneRatio, 0f, 1f);
+
         if (Input.BaudRate <= 0)
         {
             warnings.Add($"BaudRate={Input.BaudRate} 无效，已调整为 115200。");
@@ -178,6 +199,11 @@ public sealed class SignalSourceConfig
     public string? HookedOffset { get; set; }
     public string? CatchCompletedOffset { get; set; }
     public string? TensionOffset { get; set; }
+    public string? FishPositionOffset { get; set; }
+    public string? BarCenterOffset { get; set; }
+    public string? BarHeightOffset { get; set; }
+    public string? BarTopOffset { get; set; }
+    public string? BarBottomOffset { get; set; }
 
     public bool TryGetTargetObjectAddress(out ulong address) => TryParseAddress(TargetObjectAddress, out address);
 
@@ -198,6 +224,36 @@ public sealed class SignalSourceConfig
 
     public bool TryGetTensionOffset(out ulong offset) => TryParseAddress(TensionOffset, out offset);
 
+    public bool TryGetPositionOffsets(out PositionOffsets offsets)
+    {
+        offsets = default;
+
+        if (!TryParseAddress(FishPositionOffset, out var fishPositionOffset) ||
+            !TryParseAddress(BarCenterOffset, out var barCenterOffset) ||
+            !TryParseAddress(BarHeightOffset, out var barHeightOffset))
+        {
+            return false;
+        }
+
+        offsets = new PositionOffsets(fishPositionOffset, barCenterOffset, barHeightOffset);
+        return true;
+    }
+
+    public bool TryGetBarRangeOffsets(out BarRangeOffsets offsets)
+    {
+        offsets = default;
+
+        if (!TryParseAddress(FishPositionOffset, out var fishPositionOffset) ||
+            !TryParseAddress(BarTopOffset, out var barTopOffset) ||
+            !TryParseAddress(BarBottomOffset, out var barBottomOffset))
+        {
+            return false;
+        }
+
+        offsets = new BarRangeOffsets(fishPositionOffset, barTopOffset, barBottomOffset);
+        return true;
+    }
+
     private static bool TryParseAddress(string? text, out ulong value)
     {
         value = 0;
@@ -217,3 +273,5 @@ public sealed class SignalSourceConfig
 }
 
 public readonly record struct SignalOffsets(ulong HookedOffset, ulong CatchCompletedOffset, ulong TensionOffset);
+public readonly record struct PositionOffsets(ulong FishPositionOffset, ulong BarCenterOffset, ulong BarHeightOffset);
+public readonly record struct BarRangeOffsets(ulong FishPositionOffset, ulong BarTopOffset, ulong BarBottomOffset);
