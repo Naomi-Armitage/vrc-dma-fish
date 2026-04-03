@@ -28,6 +28,7 @@ public sealed class UnityScanner
         try
         {
             var activePattern = string.IsNullOrWhiteSpace(pattern) ? DefaultGameObjectManagerPattern : pattern.Trim();
+            Logger.Debug("扫描", $"UnityPlayer.dll 基址 0x{unityPlayerBase:X}，扫描特征码 {activePattern}");
             var (patternBytes, wildcardMask) = ParsePattern(activePattern);
             using var search = _process.Search(unityPlayerBase, unityPlayerBase + 0x10000000, 8, Vmm.FLAG_NOCACHE);
             search.AddSearch(patternBytes, wildcardMask, 1);
@@ -41,6 +42,7 @@ public sealed class UnityScanner
             }
 
             var instructionAddress = result.result[0].address;
+            Logger.Debug("扫描", $"特征码首个命中地址 0x{instructionAddress:X}");
             var relativeOffsetBytes = _process.MemRead(instructionAddress + 3, 4, Vmm.FLAG_NOCACHE);
             if (relativeOffsetBytes.Length != 4)
             {
@@ -49,7 +51,9 @@ public sealed class UnityScanner
             }
 
             var relativeOffset = BitConverter.ToInt32(relativeOffsetBytes, 0);
-            return (ulong)((long)instructionAddress + 7 + relativeOffset);
+            var gameObjectManagerAddress = (ulong)((long)instructionAddress + 7 + relativeOffset);
+            Logger.Debug("扫描", $"解析得到 GameObjectManager 地址 0x{gameObjectManagerAddress:X}");
+            return gameObjectManagerAddress;
         }
         catch (Exception ex)
         {
@@ -105,6 +109,44 @@ public sealed class UnityScanner
         return 0;
     }
 
+    public IReadOnlyList<UnityObjectInfo> DumpObjects(int limit, ulong gameObjectManagerAddress, string? gameObjectManagerPattern)
+    {
+        if (limit <= 0)
+        {
+            return Array.Empty<UnityObjectInfo>();
+        }
+
+        if (gameObjectManagerAddress == 0)
+        {
+            gameObjectManagerAddress = FindGameObjectManager(gameObjectManagerPattern);
+        }
+
+        if (gameObjectManagerAddress == 0)
+        {
+            return Array.Empty<UnityObjectInfo>();
+        }
+
+        var objects = new List<UnityObjectInfo>();
+        var currentNode = ReadUInt64(gameObjectManagerAddress + 0x10);
+        var remainingNodes = Math.Max(limit * 4, 256);
+
+        while (currentNode != 0 && remainingNodes-- > 0 && objects.Count < limit)
+        {
+            var gameObject = ReadUInt64(currentNode + 0x10);
+            if (gameObject != 0)
+            {
+                var namePtr = ReadUInt64(gameObject + 0x30);
+                var objectName = ReadString(namePtr);
+                objects.Add(new UnityObjectInfo(currentNode, gameObject, namePtr, objectName));
+            }
+
+            currentNode = ReadUInt64(currentNode + 0x8);
+        }
+
+        Logger.Debug("扫描", $"对象转储完成，共收集 {objects.Count} 个对象。");
+        return objects;
+    }
+
     private static (byte[] PatternBytes, byte[] WildcardMask) ParsePattern(string pattern)
     {
         var tokens = pattern.Split(' ', StringSplitOptions.RemoveEmptyEntries);
@@ -141,3 +183,5 @@ public sealed class UnityScanner
         return _process.MemReadString(Encoding.UTF8, address, 64, Vmm.FLAG_NOCACHE, true).TrimEnd('\0');
     }
 }
+
+public readonly record struct UnityObjectInfo(ulong NodeAddress, ulong GameObjectAddress, ulong NamePointer, string Name);

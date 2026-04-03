@@ -28,6 +28,8 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
 
     public bool IsReady { get; private set; }
 
+    public bool HasConnectedProcess => _process is not null && _process.IsValid;
+
     private void Initialize()
     {
         try
@@ -39,6 +41,7 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
             }
 
             _vmm = new Vmm("-device", "fpga");
+            Logger.Debug("DMA", $"开始初始化 DMA，目标进程名 '{_config.ProcessName}'。");
             _process = ResolveProcess(_config.ProcessName);
 
             if (_process is null || !_process.IsValid)
@@ -61,12 +64,18 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
 
                 _targetObjectAddr = scanner.FindObjectByName(_config.TargetObjectName, gameObjectManagerAddress, _config.GameObjectManagerPattern);
             }
+            else
+            {
+                Logger.Info("DMA", $"使用配置中的目标对象地址 0x{_targetObjectAddr:X}。");
+            }
 
             if (_targetObjectAddr == 0)
             {
                 Logger.Warn("DMA", "目标对象地址缺失，且自动扫描未找到目标对象。可在配置中填写 GameObjectManagerAddress 或 TargetObjectAddress 绕过特征扫描。");
                 return;
             }
+
+            Logger.Debug("DMA", $"最终目标对象地址 0x{_targetObjectAddr:X}。");
 
             if (_config.TryGetSignalOffsets(out var offsets))
             {
@@ -344,5 +353,34 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
         return trimmed.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
             ? trimmed[..^4]
             : trimmed;
+    }
+
+    public ulong ResolveGameObjectManagerAddress()
+    {
+        if (!HasConnectedProcess || _process is null)
+        {
+            return 0;
+        }
+
+        if (_config.TryGetGameObjectManagerAddress(out var configuredAddress))
+        {
+            return configuredAddress;
+        }
+
+        var scanner = new UnityScanner(_process);
+        return scanner.FindGameObjectManager(_config.GameObjectManagerPattern);
+    }
+
+    public IReadOnlyList<UnityObjectInfo> DumpUnityObjects(int limit)
+    {
+        if (!HasConnectedProcess || _process is null)
+        {
+            return Array.Empty<UnityObjectInfo>();
+        }
+
+        var scanner = new UnityScanner(_process);
+        var gameObjectManagerAddress = ResolveGameObjectManagerAddress();
+        Logger.Debug("DMA", $"对象转储使用的 GameObjectManager 地址 0x{gameObjectManagerAddress:X}。");
+        return scanner.DumpObjects(limit, gameObjectManagerAddress, _config.GameObjectManagerPattern);
     }
 }

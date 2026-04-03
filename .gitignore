@@ -12,3 +12,4 @@ obj/
 
 # Config
 appsettings.json
+logs/

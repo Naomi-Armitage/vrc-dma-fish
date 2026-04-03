@@ -1,6 +1,7 @@
 using VrcDmaFish.Inputs;
 using VrcDmaFish.Models;
 using VrcDmaFish.Providers;
+using VrcDmaFish.UI;
 
 namespace VrcDmaFish.Core;
 
@@ -25,9 +26,14 @@ public sealed class FishingBot
 
     public FishContext LastContext { get; private set; } = new();
 
+    public TimeSpan StateElapsed => DateTime.UtcNow - _stateSince;
+
     public void Tick()
     {
         LastContext = _src.Read();
+        Logger.Debug(
+            "状态",
+            $"tick state={State} hooked={LastContext.IsHooked} catch={LastContext.CatchCompleted} tension={LastContext.Tension:0.000} fish={FormatNullable(LastContext.FishCenterY)} bar={FormatNullable(LastContext.BarCenterY)} height={FormatNullable(LastContext.BarHeight)}");
 
         switch (State)
         {
@@ -76,6 +82,7 @@ public sealed class FishingBot
                 else if (HasPositionSignal())
                 {
                     var decision = _positionStrategy.Decide(LastContext, _cfg);
+                    Logger.Debug("控制", $"位置控制 decision press={decision.ShouldPress} hold={decision.HoldMs}");
                     if (decision.ShouldPress)
                     {
                         _in.ReelPulse(decision.HoldMs);
@@ -89,6 +96,7 @@ public sealed class FishingBot
                 else if (ShouldPauseReeling(LastContext.Tension))
                 {
                     _reelPausedForTension = true;
+                    Logger.Debug("控制", $"张力过高，暂停收线 tension={LastContext.Tension:0.000}");
                     _in.ReleaseReel();
                     _in.Wait(_cfg.ReelRestMs);
                 }
@@ -96,6 +104,7 @@ public sealed class FishingBot
                 {
                     _reelPausedForTension = false;
                     var decision = _tensionStrategy.Decide(LastContext, _cfg);
+                    Logger.Debug("控制", $"张力控制 decision press={decision.ShouldPress} hold={decision.HoldMs}");
                     if (decision.ShouldPress)
                     {
                         _in.ReelPulse(decision.HoldMs);
@@ -140,7 +149,10 @@ public sealed class FishingBot
 
     private void TransitionTo(FishState nextState)
     {
+        Logger.Debug("状态", $"状态切换 {State} -> {nextState}");
         State = nextState;
         _stateSince = DateTime.UtcNow;
     }
+
+    private static string FormatNullable(float? value) => value.HasValue ? value.Value.ToString("0.###") : "-";
 }

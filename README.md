@@ -42,6 +42,22 @@ dotnet run
 ```
 
 如果当前终端支持交互，程序会自动进入中文配置向导。
+在 Windows 交互终端下，程序会默认拉起一个独立监控窗口，主窗口保留日志和 debug 输出，方便排查 DMA / Unity 扫描问题。
+
+### 4. 调试模式
+
+常用调试命令：
+
+```powershell
+dotnet run --project VrcDmaFish.csproj -- --debug
+dotnet run --project VrcDmaFish.csproj -- --debug --no-ui-window
+dotnet run --project VrcDmaFish.csproj -- --dump-objects 128 --debug --no-wizard
+```
+
+- `--debug`：开启详细日志，包含状态切换、DMA 初始化、Unity 扫描细节。
+- `--no-ui-window`：不拉起独立监控窗口，直接在当前控制台显示状态。
+- `--dump-objects [数量]`：尝试转储 Unity 对象名，便于确认 `FishingLogic` 真实对象名和 `GameObjectManager` 是否有效。
+- `--log-file 路径`：自定义日志文件位置；默认会写到仓库下的 `logs\` 目录。
 
 ## 配置说明
 
