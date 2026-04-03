@@ -62,7 +62,10 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
                     Logger.Info("DMA", $"使用配置中的 GameObjectManager 地址 0x{gameObjectManagerAddress:X}。");
                 }
 
-                _targetObjectAddr = scanner.FindObjectByName(_config.TargetObjectName, gameObjectManagerAddress, _config.GameObjectManagerPattern);
+                _targetObjectAddr = scanner.FindObjectByName(
+                    _config.TargetObjectName,
+                    gameObjectManagerAddress,
+                    _config.GetGameObjectManagerPatternCandidates());
             }
             else
             {
@@ -368,7 +371,7 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
         }
 
         var scanner = new UnityScanner(_process);
-        return scanner.FindGameObjectManager(_config.GameObjectManagerPattern);
+        return scanner.FindGameObjectManager(_config.GetGameObjectManagerPatternCandidates());
     }
 
     public IReadOnlyList<UnityObjectInfo> DumpUnityObjects(int limit)
@@ -381,6 +384,6 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
         var scanner = new UnityScanner(_process);
         var gameObjectManagerAddress = ResolveGameObjectManagerAddress();
         Logger.Debug("DMA", $"对象转储使用的 GameObjectManager 地址 0x{gameObjectManagerAddress:X}。");
-        return scanner.DumpObjects(limit, gameObjectManagerAddress, _config.GameObjectManagerPattern);
+        return scanner.DumpObjects(limit, gameObjectManagerAddress, _config.GetGameObjectManagerPatternCandidates());
     }
 }

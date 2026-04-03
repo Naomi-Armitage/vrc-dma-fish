@@ -231,6 +231,7 @@ public sealed class SignalSourceConfig
     public string ProcessName { get; set; } = "VRChat";
     public string TargetObjectName { get; set; } = "FishingLogic";
     public string? GameObjectManagerPattern { get; set; }
+    public string[]? GameObjectManagerPatterns { get; set; }
     public string? GameObjectManagerAddress { get; set; }
     public string? TargetObjectAddress { get; set; }
     public string? HookedOffset { get; set; }
@@ -245,6 +246,22 @@ public sealed class SignalSourceConfig
     public bool TryGetGameObjectManagerAddress(out ulong address) => TryParseAddress(GameObjectManagerAddress, out address);
 
     public bool TryGetTargetObjectAddress(out ulong address) => TryParseAddress(TargetObjectAddress, out address);
+
+    public IReadOnlyList<string> GetGameObjectManagerPatternCandidates()
+    {
+        var patterns = new List<string>();
+        AddPattern(patterns, GameObjectManagerPattern);
+
+        if (GameObjectManagerPatterns is not null)
+        {
+            foreach (var pattern in GameObjectManagerPatterns)
+            {
+                AddPattern(patterns, pattern);
+            }
+        }
+
+        return patterns;
+    }
 
     public bool TryGetSignalOffsets(out SignalOffsets offsets)
     {
@@ -308,6 +325,20 @@ public sealed class SignalSourceConfig
         }
 
         return ulong.TryParse(trimmed, NumberStyles.Integer, CultureInfo.InvariantCulture, out value);
+    }
+
+    private static void AddPattern(List<string> patterns, string? pattern)
+    {
+        if (string.IsNullOrWhiteSpace(pattern))
+        {
+            return;
+        }
+
+        var trimmed = pattern.Trim();
+        if (!patterns.Contains(trimmed, StringComparer.OrdinalIgnoreCase))
+        {
+            patterns.Add(trimmed);
+        }
     }
 }
 

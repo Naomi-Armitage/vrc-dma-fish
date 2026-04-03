@@ -85,6 +85,9 @@ dotnet run --project VrcDmaFish.csproj -- --dump-objects 128 --debug --no-wizard
 - `FishPositionOffset`
 - `BarCenterOffset` 与 `BarHeightOffset`
 - 或 `BarTopOffset` 与 `BarBottomOffset`
+- `GameObjectManagerPattern`：单条 GOM 特征码覆盖。
+- `GameObjectManagerPatterns`：多条 GOM 特征码候选，程序会按顺序尝试并自动校验对象链。
+- `GameObjectManagerAddress` / `TargetObjectAddress`：当自动扫描仍失效时，可直接手填地址绕过。
 
 ## 注意事项
 
