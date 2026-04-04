@@ -1,17 +1,13 @@
-using System.Runtime.Versioning;
 using System.Text;
-using Vmmsharp;
 using VrcDmaFish.Models;
 using VrcDmaFish.UI;
 
 namespace VrcDmaFish.Providers;
 
-[SupportedOSPlatform("windows")]
 public sealed class UnityScanner
 {
     private const int SearchAlignment = 8;
     private const int SearchResultLimit = 64;
-    private const int MaxNodeProbeCount = 8;
     private const int MaxModuleScanSize = 0x10000000;
     private const int DefaultProbeResultLimit = 64;
     private static readonly string[] ModuleCandidates =
@@ -39,35 +35,39 @@ public sealed class UnityScanner
             "48 8D 35 ?? ?? ?? ?? 81 FA"),
     };
 
-    private readonly VmmProcess _process;
+    private readonly IProcessMemory _memory;
     private readonly UnityNativeLayout _layout;
 
-    public UnityScanner(VmmProcess process, UnityNativeLayout layout)
+    public UnityScanner(IProcessMemory memory, UnityNativeLayout layout)
     {
-        _process = process;
+        _memory = memory;
         _layout = layout;
     }
 
     public ulong FindGameObjectManager(IReadOnlyList<string>? configuredPatterns = null)
     {
         var candidates = ProbeGameObjectManagerCandidates(configuredPatterns, DefaultProbeResultLimit);
-        var bestCandidate = candidates.FirstOrDefault(candidate => candidate.IsValid);
+        var bestCandidate = candidates
+            .Where(candidate => candidate.IsValid)
+            .OrderByDescending(candidate => candidate.Score)
+            .ThenBy(candidate => candidate.PrefilterRejected)
+            .FirstOrDefault();
 
-        if (bestCandidate.IsValid)
+        if (bestCandidate is not null)
         {
             Logger.Info(
                 "扫描",
-                $"GameObjectManager 自动扫描成功：模块 {bestCandidate.ModuleName}，签名 {bestCandidate.PatternName}，地址 0x{bestCandidate.ManagerAddress:X}，样本对象: {bestCandidate.SampleNames}");
+                $"GameObjectManager 自动扫描成功：模块 {bestCandidate.ModuleName}，签名 {bestCandidate.PatternName}，地址 0x{bestCandidate.ManagerAddress:X}，路径 {bestCandidate.ValidationPath}，样本对象: {bestCandidate.SampleNames}");
             return bestCandidate.ManagerAddress;
         }
 
         if (Logger.IsDebugEnabled)
         {
-            foreach (var candidate in candidates.Where(candidate => !candidate.IsValid).Take(12))
+            foreach (var candidate in candidates.Take(16))
             {
                 Logger.Debug(
                     "扫描",
-                    $"候选 GOM 未通过校验：module={candidate.ModuleName} pattern={candidate.PatternName} hit=0x{candidate.InstructionAddress:X} source={candidate.CandidateSource} candidate=0x{candidate.ManagerAddress:X} reason={candidate.FailureReason}");
+                    $"候选 GOM 校验结果：module={candidate.ModuleName} pattern={candidate.PatternName} hit=0x{candidate.InstructionAddress:X} source={candidate.CandidateSource} candidate=0x{candidate.ManagerAddress:X} valid={candidate.IsValid} score={candidate.Score} prefilter={candidate.PrefilterRejected} reason={candidate.FailureReason}");
             }
         }
 
@@ -80,7 +80,8 @@ public sealed class UnityScanner
 
     public IReadOnlyList<GameObjectManagerProbeResult> ProbeGameObjectManagerCandidates(
         IReadOnlyList<string>? configuredPatterns = null,
-        int limit = DefaultProbeResultLimit)
+        int limit = DefaultProbeResultLimit,
+        bool includeReplayData = false)
     {
         if (limit <= 0)
         {
@@ -116,30 +117,15 @@ public sealed class UnityScanner
 
                 foreach (var hit in hits)
                 {
-                    foreach (var candidate in ResolveCandidateAddresses(hit))
+                    foreach (var descriptor in ResolveCandidateDescriptors(module, patternSpec, hit))
                     {
-                        var dedupeKey = $"{module.Name}|{patternSpec.Name}|{hit:X}|{candidate.Source}|{candidate.Address:X}";
+                        var dedupeKey = $"{descriptor.ModuleName}|{descriptor.PatternName}|{descriptor.InstructionAddress:X}|{descriptor.CandidateSource}|{descriptor.CandidateAddress:X}";
                         if (!seenCandidates.Add(dedupeKey))
                         {
                             continue;
                         }
 
-                        var validation = ValidateGameObjectManager(candidate.Address);
-                        results.Add(
-                            new GameObjectManagerProbeResult(
-                                module.Name,
-                                patternSpec.Name,
-                                hit,
-                                candidate.Source,
-                                candidate.Address,
-                                validation.IsValid,
-                                validation.Score,
-                                validation.SampleNames,
-                                validation.FailureReason,
-                                validation.FirstNodeAddress,
-                                validation.FirstGameObjectAddress,
-                                validation.FirstNamePointer,
-                                validation.FirstObjectName));
+                        results.Add(includeReplayData ? ValidateCandidateWithReplay(descriptor) : ValidateCandidate(descriptor));
                     }
                 }
             }
@@ -148,11 +134,19 @@ public sealed class UnityScanner
         return results
             .OrderByDescending(result => result.IsValid)
             .ThenByDescending(result => result.Score)
+            .ThenBy(result => result.PrefilterRejected)
             .ThenBy(result => result.ModuleName, StringComparer.OrdinalIgnoreCase)
             .ThenBy(result => result.PatternName, StringComparer.OrdinalIgnoreCase)
             .ThenBy(result => result.InstructionAddress)
             .Take(limit)
             .ToArray();
+    }
+
+    public static GameObjectManagerProbeResult RevalidateRecordedCandidate(GameObjectManagerProbeResult candidate)
+    {
+        using var replay = new ReplayProcessMemory(candidate.ReplayMemoryBlocks);
+        var scanner = new UnityScanner(replay, candidate.Layout);
+        return scanner.ValidateCandidate(CreateDescriptor(candidate));
     }
 
     public ulong FindObjectByName(string name)
@@ -285,7 +279,7 @@ public sealed class UnityScanner
         var modules = new List<ModuleCandidate>();
         foreach (var moduleName in ModuleCandidates)
         {
-            var baseAddress = _process.GetModuleBase(moduleName);
+            var baseAddress = _memory.GetModuleBase(moduleName);
             if (baseAddress != 0)
             {
                 modules.Add(new ModuleCandidate(moduleName, baseAddress));
@@ -334,26 +328,13 @@ public sealed class UnityScanner
         try
         {
             var (patternBytes, wildcardMask) = ParsePattern(pattern);
-            using var search = _process.Search(
+            return _memory.Search(
                 module.BaseAddress,
                 module.BaseAddress + MaxModuleScanSize,
                 SearchAlignment,
-                Vmm.FLAG_NOCACHE);
-
-            search.AddSearch(patternBytes, wildcardMask, SearchResultLimit);
-            search.Start();
-
-            var result = search.Result();
-            if (!result.isCompletedSuccess || result.result is null || result.result.Count == 0)
-            {
-                return Array.Empty<ulong>();
-            }
-
-            return result.result
-                .Select(entry => entry.address)
-                .Where(address => address != 0)
-                .Distinct()
-                .ToArray();
+                patternBytes,
+                wildcardMask,
+                SearchResultLimit);
         }
         catch (Exception ex)
         {
@@ -362,134 +343,290 @@ public sealed class UnityScanner
         }
     }
 
-    private IEnumerable<GameObjectManagerAddressCandidate> ResolveCandidateAddresses(ulong instructionAddress)
+    private IEnumerable<GameObjectManagerCandidateDescriptor> ResolveCandidateDescriptors(ModuleCandidate module, GameObjectManagerPatternSpec patternSpec, ulong instructionAddress)
     {
         if (!TryReadRelativeTarget(instructionAddress, out var ripTarget))
         {
             yield break;
         }
 
-        var seen = new HashSet<ulong>();
-        foreach (var candidate in ExpandCandidateChain(ripTarget))
+        var chain = new List<(string Source, ulong Address)>
         {
-            if (candidate.Address != 0 && seen.Add(candidate.Address))
+            ("rip", ripTarget),
+        };
+
+        if (TryReadUInt64(ripTarget, out var dereferencedAddress) && dereferencedAddress != 0)
+        {
+            chain.Add(("rip*1", dereferencedAddress));
+
+            if (TryReadUInt64(dereferencedAddress, out var secondHopAddress) && secondHopAddress != 0)
             {
-                yield return candidate;
+                chain.Add(("rip*2", secondHopAddress));
             }
+        }
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in chain)
+        {
+            var dedupeKey = $"{entry.Source}|{entry.Address:X}";
+            if (!seen.Add(dedupeKey))
+            {
+                continue;
+            }
+
+            var prefilter = EvaluateCandidateSeed(entry.Address);
+            yield return new GameObjectManagerCandidateDescriptor(
+                module.Name,
+                patternSpec.Name,
+                instructionAddress,
+                ripTarget,
+                entry.Source,
+                entry.Address,
+                prefilter.Rejected,
+                prefilter.Reason);
         }
     }
 
-    private IEnumerable<GameObjectManagerAddressCandidate> ExpandCandidateChain(ulong startAddress)
+    private CandidatePrefilterResult EvaluateCandidateSeed(ulong candidateAddress)
     {
-        yield return new GameObjectManagerAddressCandidate("rip", startAddress);
-
-        if (!TryReadUInt64(startAddress, out var dereferencedAddress) || dereferencedAddress == 0)
+        if (!IsLikelyPointer(candidateAddress))
         {
-            yield break;
+            return new CandidatePrefilterResult(true, "candidate 不是看起来像用户态指针的地址。");
         }
 
-        yield return new GameObjectManagerAddressCandidate("rip*1", dereferencedAddress);
-
-        if (!TryReadUInt64(dereferencedAddress, out var secondHopAddress) || secondHopAddress == 0)
+        if ((candidateAddress & 0x7) != 0)
         {
-            yield break;
+            return new CandidatePrefilterResult(true, "candidate 未按 8 字节对齐。");
         }
 
-        yield return new GameObjectManagerAddressCandidate("rip*2", secondHopAddress);
+        if (!TryReadBytes(candidateAddress, 8, out _))
+        {
+            return new CandidatePrefilterResult(true, "candidate 地址不可读。");
+        }
+
+        var hasStructuredRead =
+            GetManagerFieldOffsets().Any(offset => TryReadBytes(candidateAddress + offset, 8, out _)) ||
+            GetNodeGameObjectOffsets().Any(offset => TryReadBytes(candidateAddress + offset, 8, out _));
+
+        return hasStructuredRead
+            ? new CandidatePrefilterResult(false, string.Empty)
+            : new CandidatePrefilterResult(true, "candidate 周围没有读到像 manager/node 结构的字段。");
     }
 
-    private bool TryReadRelativeTarget(ulong instructionAddress, out ulong targetAddress)
+    private GameObjectManagerProbeResult ValidateCandidateWithReplay(GameObjectManagerCandidateDescriptor descriptor)
     {
-        targetAddress = 0;
-        try
+        using var recorder = new RecordingProcessMemory(_memory);
+        var scanner = new UnityScanner(recorder, _layout);
+        var result = scanner.ValidateCandidate(descriptor);
+        return result with
         {
-            var relativeOffsetBytes = _process.MemRead(instructionAddress + 3, 4, Vmm.FLAG_NOCACHE);
-            if (relativeOffsetBytes.Length != 4)
-            {
-                return false;
-            }
-
-            var relativeOffset = BitConverter.ToInt32(relativeOffsetBytes, 0);
-            targetAddress = (ulong)((long)instructionAddress + 7 + relativeOffset);
-            return targetAddress != 0;
-        }
-        catch
-        {
-            return false;
-        }
+            ReplayMemoryBlocks = recorder.ExportBlocks(),
+        };
     }
 
-    private GameObjectManagerValidationResult ValidateGameObjectManager(ulong managerAddress)
+    private GameObjectManagerProbeResult ValidateCandidate(GameObjectManagerCandidateDescriptor descriptor)
     {
-        if (!IsLikelyPointer(managerAddress))
+        var attempts = new[]
         {
-            return new GameObjectManagerValidationResult(false, 0, string.Empty, "候选地址不像有效指针。");
+            ValidateAsManagerBase(descriptor),
+            ValidateAsNodePointer(descriptor),
+        };
+
+        var bestAttempt = attempts
+            .OrderByDescending(attempt => attempt.IsValid)
+            .ThenByDescending(attempt => attempt.Score)
+            .First();
+
+        var failureReason = bestAttempt.FailureReason;
+        if (string.IsNullOrWhiteSpace(failureReason) && descriptor.PrefilterRejected)
+        {
+            failureReason = descriptor.PrefilterReason;
         }
 
-        if (!TryReadUInt64(managerAddress + _layout.GameObjectManagerActiveNodesOffset, out var currentNode))
+        return new GameObjectManagerProbeResult
         {
-            return new GameObjectManagerValidationResult(
-                false,
-                0,
-                string.Empty,
-                $"读取 manager+0x{_layout.GameObjectManagerActiveNodesOffset:X} 失败。");
+            Layout = _layout,
+            ModuleName = descriptor.ModuleName,
+            PatternName = descriptor.PatternName,
+            InstructionAddress = descriptor.InstructionAddress,
+            RipTargetAddress = descriptor.RipTargetAddress,
+            CandidateSource = descriptor.CandidateSource,
+            ManagerAddress = descriptor.CandidateAddress,
+            PrefilterRejected = descriptor.PrefilterRejected,
+            PrefilterReason = descriptor.PrefilterReason,
+            IsValid = bestAttempt.IsValid,
+            Score = bestAttempt.Score,
+            SampleNames = bestAttempt.SampleNames,
+            FailureReason = failureReason,
+            Interpretation = bestAttempt.Interpretation,
+            ValidationPath = bestAttempt.ValidationPath,
+            ManagerFieldLabel = bestAttempt.ManagerFieldLabel,
+            ManagerFieldOffset = bestAttempt.ManagerFieldOffset,
+            ManagerFieldAddress = bestAttempt.ManagerFieldAddress,
+            ManagerFieldValue = bestAttempt.ManagerFieldValue,
+            NodeFieldLabel = bestAttempt.NodeFieldLabel,
+            NodeFieldOffset = bestAttempt.NodeFieldOffset,
+            NodeFieldAddress = bestAttempt.NodeFieldAddress,
+            NodeFieldValue = bestAttempt.NodeFieldValue,
+            NextNodeValue = bestAttempt.NextNodeValue,
+            GameObjectAddress = bestAttempt.GameObjectAddress,
+            NamePointerLabel = bestAttempt.NamePointerLabel,
+            NamePointerOffset = bestAttempt.NamePointerOffset,
+            NamePointerAddress = bestAttempt.NamePointerAddress,
+            NamePointerValue = bestAttempt.NamePointerValue,
+            ObjectName = bestAttempt.ObjectName,
+            DeclaredComponentCount = bestAttempt.DeclaredComponentCount,
+            ValidComponentEntries = bestAttempt.ValidComponentEntries,
+            SampleComponentPointers = bestAttempt.SampleComponentPointers,
+            Observations = attempts.SelectMany(attempt => attempt.Observations).ToArray(),
+            ReplayMemoryBlocks = Array.Empty<RecordedMemoryBlock>(),
+        };
+    }
+
+    private GomValidationAttempt ValidateAsManagerBase(GameObjectManagerCandidateDescriptor descriptor)
+    {
+        var bestAttempt = GomValidationAttempt.Invalid("ManagerBase", "manager 路径未读到可信链路。");
+
+        foreach (var managerOffset in GetManagerFieldOffsets())
+        {
+            var observations = new List<GameObjectManagerProbeObservation>();
+            var managerFieldAddress = descriptor.CandidateAddress + managerOffset;
+            var managerFieldLabel = $"manager+0x{managerOffset:X}";
+            var managerValueRead = TryReadUInt64(managerFieldAddress, out var nodePointer);
+            observations.Add(
+                CreateObservation(
+                    "manager",
+                    managerFieldLabel,
+                    managerFieldAddress,
+                    managerValueRead ? nodePointer : null,
+                    managerValueRead && IsLikelyPointer(nodePointer),
+                    note: managerValueRead ? string.Empty : "读取失败"));
+
+            if (!managerValueRead || !IsLikelyPointer(nodePointer))
+            {
+                bestAttempt = ChooseBetterAttempt(
+                    bestAttempt,
+                    GomValidationAttempt.FromFailure(
+                        "ManagerBase",
+                        observations,
+                        $"manager 字段 {managerFieldLabel} 未读到可信节点指针。"));
+                continue;
+            }
+
+            var attempt = ProbeNodePath(
+                interpretation: "ManagerBase",
+                nodeAddress: nodePointer,
+                managerFieldLabel: managerFieldLabel,
+                managerFieldOffset: managerOffset,
+                managerFieldAddress: managerFieldAddress,
+                managerFieldValue: nodePointer,
+                seedObservations: observations);
+
+            bestAttempt = ChooseBetterAttempt(bestAttempt, attempt);
         }
 
-        if (!IsLikelyPointer(currentNode))
+        return bestAttempt;
+    }
+
+    private GomValidationAttempt ValidateAsNodePointer(GameObjectManagerCandidateDescriptor descriptor)
+    {
+        if (!IsLikelyPointer(descriptor.CandidateAddress))
         {
-            return new GameObjectManagerValidationResult(
-                false,
-                0,
-                string.Empty,
-                $"manager+0x{_layout.GameObjectManagerActiveNodesOffset:X}=0x{currentNode:X} 不是有效节点指针。",
-                FirstNodeAddress: currentNode);
+            return GomValidationAttempt.Invalid("NodePointer", "candidate 自身不像节点指针。");
         }
 
-        var score = 0;
-        var samples = new List<string>();
-        var visitedNodes = new HashSet<ulong>();
-        ulong? firstNodeAddress = currentNode;
-        ulong? firstGameObjectAddress = null;
-        ulong? firstNamePointer = null;
-        string? firstObjectName = null;
-
-        for (var i = 0; i < MaxNodeProbeCount && currentNode != 0; i++)
+        var observations = new List<GameObjectManagerProbeObservation>
         {
-            if (!visitedNodes.Add(currentNode))
+            CreateObservation(
+                "candidate",
+                "candidate(node)",
+                descriptor.CandidateAddress,
+                descriptor.CandidateAddress,
+                looksLikePointer: true,
+                note: descriptor.PrefilterRejected ? descriptor.PrefilterReason : "将 candidate 直接按节点指针解释"),
+        };
+
+        return ProbeNodePath(
+            interpretation: "NodePointer",
+            nodeAddress: descriptor.CandidateAddress,
+            managerFieldLabel: "candidate(node)",
+            managerFieldOffset: null,
+            managerFieldAddress: null,
+            managerFieldValue: null,
+            seedObservations: observations);
+    }
+
+    private GomValidationAttempt ProbeNodePath(
+        string interpretation,
+        ulong nodeAddress,
+        string managerFieldLabel,
+        ulong? managerFieldOffset,
+        ulong? managerFieldAddress,
+        ulong? managerFieldValue,
+        List<GameObjectManagerProbeObservation> seedObservations)
+    {
+        var bestAttempt = GomValidationAttempt.Invalid(interpretation, "节点路径未读到可信的 GameObject。");
+
+        foreach (var nodeGameObjectOffset in GetNodeGameObjectOffsets())
+        {
+            var observations = new List<GameObjectManagerProbeObservation>(seedObservations);
+            var nodeFieldAddress = nodeAddress + nodeGameObjectOffset;
+            var nodeFieldLabel = $"node+0x{nodeGameObjectOffset:X}";
+            var nodeValueRead = TryReadUInt64(nodeFieldAddress, out var gameObjectAddress);
+            observations.Add(
+                CreateObservation(
+                    "node",
+                    nodeFieldLabel,
+                    nodeFieldAddress,
+                    nodeValueRead ? gameObjectAddress : null,
+                    nodeValueRead && IsLikelyPointer(gameObjectAddress),
+                    note: nodeValueRead ? string.Empty : "读取失败"));
+
+            TryReadUInt64(nodeAddress + _layout.ObjectNodeNextOffset, out var nextNodeValue);
+            observations.Add(
+                CreateObservation(
+                    "node",
+                    $"node+0x{_layout.ObjectNodeNextOffset:X}",
+                    nodeAddress + _layout.ObjectNodeNextOffset,
+                    nextNodeValue == 0 ? null : nextNodeValue,
+                    nextNodeValue == 0 || IsLikelyPointer(nextNodeValue),
+                    note: nextNodeValue == 0 ? "next=0" : string.Empty));
+
+            if (!nodeValueRead || !IsLikelyPointer(gameObjectAddress))
             {
-                break;
+                bestAttempt = ChooseBetterAttempt(
+                    bestAttempt,
+                    GomValidationAttempt.FromFailure(
+                        interpretation,
+                        observations,
+                        $"{nodeFieldLabel} 未读到可信 GameObject 指针。"));
+                continue;
             }
 
-            if (!TryReadUInt64(currentNode + _layout.ObjectNodeGameObjectOffset, out var gameObject))
+            var nameProbe = ProbeGameObjectName(gameObjectAddress, observations);
+            var componentSummary = ReadComponentSummary(gameObjectAddress);
+
+            var score = 2;
+            if (nextNodeValue == 0 || IsLikelyPointer(nextNodeValue))
             {
-                break;
+                score += 1;
             }
 
-            if (!IsLikelyPointer(gameObject))
+            if (nameProbe.NamePointerRead)
             {
-                firstGameObjectAddress ??= gameObject;
-                break;
+                score += 1;
             }
 
-            firstGameObjectAddress ??= gameObject;
-
-            if (!TryReadUInt64(gameObject + _layout.GameObjectNamePointerOffset, out var namePointer))
+            if (nameProbe.HasReadableName)
             {
-                break;
+                score += 1;
             }
 
-            firstNamePointer ??= namePointer;
-            var objectName = ReadString(namePointer);
-            firstObjectName ??= objectName;
-
-            if (!IsPlausibleObjectName(objectName))
+            if (nameProbe.HasPlausibleName)
             {
-                break;
+                score += 1;
             }
 
-            score += 2;
-            samples.Add(objectName);
-            var componentSummary = ReadComponentSummary(gameObject);
             if (componentSummary.IsCountPlausible)
             {
                 score += 1;
@@ -500,95 +637,92 @@ public sealed class UnityScanner
                 score += 1;
             }
 
-            if (objectName.Contains("Fishing", StringComparison.OrdinalIgnoreCase) ||
-                objectName.Contains("VRChat", StringComparison.OrdinalIgnoreCase) ||
-                objectName.Contains("Manager", StringComparison.OrdinalIgnoreCase))
-            {
-                score += 1;
-            }
+            var isValid = score >= 4 && (nameProbe.HasReadableName || componentSummary.IsCountPlausible);
+            var sampleNames = !string.IsNullOrWhiteSpace(nameProbe.ObjectName)
+                ? nameProbe.ObjectName
+                : componentSummary.ValidComponentEntries > 0
+                    ? $"components={componentSummary.ValidComponentEntries}/{componentSummary.DeclaredComponentCount}"
+                    : string.Empty;
 
-            if (!TryReadUInt64(currentNode + _layout.ObjectNodeNextOffset, out currentNode))
-            {
-                currentNode = 0;
-                break;
-            }
-        }
+            var failureReason = isValid
+                ? string.Empty
+                : !string.IsNullOrWhiteSpace(nameProbe.FailureReason)
+                    ? nameProbe.FailureReason
+                    : componentSummary.IsCountPlausible
+                        ? "组件数组结构合理，但未读到可用对象名。"
+                        : "GameObject 可读，但对象名和组件数组都不够可信。";
 
-        if (samples.Count == 0)
-        {
-            var failureReason = firstObjectName is not null && !IsPlausibleObjectName(firstObjectName)
-                ? $"namePtr=0x{firstNamePointer ?? 0:X} 读取到的对象名无效: '{TrimForLog(firstObjectName)}'。"
-                : firstGameObjectAddress.HasValue && !firstNamePointer.HasValue
-                    ? $"读取 gameObject+0x{_layout.GameObjectNamePointerOffset:X} 失败，gameObject=0x{firstGameObjectAddress.Value:X}。"
-                    : firstGameObjectAddress.HasValue && !IsLikelyPointer(firstGameObjectAddress.Value)
-                        ? $"node+0x{_layout.ObjectNodeGameObjectOffset:X}=0x{firstGameObjectAddress.Value:X} 不是有效 GameObject 指针。"
-                        : currentNode != 0
-                            ? $"读取 node+0x{_layout.ObjectNodeGameObjectOffset:X} 失败，node=0x{currentNode:X}。"
-                            : "对象链可遍历，但未读到任何合理对象名。";
-
-            return new GameObjectManagerValidationResult(
-                false,
+            var validationPath = $"{managerFieldLabel} -> {nodeFieldLabel} -> {nameProbe.NamePointerLabel}";
+            var attempt = new GomValidationAttempt(
+                interpretation,
+                isValid,
                 score,
-                string.Empty,
+                sampleNames,
                 failureReason,
-                firstNodeAddress,
-                firstGameObjectAddress,
-                firstNamePointer,
-                firstObjectName);
+                validationPath,
+                managerFieldLabel,
+                managerFieldOffset,
+                managerFieldAddress,
+                managerFieldValue,
+                nodeFieldLabel,
+                nodeGameObjectOffset,
+                nodeFieldAddress,
+                gameObjectAddress,
+                nextNodeValue == 0 ? null : nextNodeValue,
+                gameObjectAddress,
+                nameProbe.NamePointerLabel,
+                nameProbe.NamePointerOffset,
+                nameProbe.NamePointerFieldAddress,
+                nameProbe.NamePointerValue,
+                nameProbe.ObjectName,
+                componentSummary.DeclaredComponentCount == 0 ? null : componentSummary.DeclaredComponentCount,
+                componentSummary.IsCountPlausible ? componentSummary.ValidComponentEntries : null,
+                componentSummary.SampleComponentPointers,
+                observations.ToArray());
+
+            bestAttempt = ChooseBetterAttempt(bestAttempt, attempt);
         }
 
-        var sampleNames = string.Join(", ", samples.Distinct(StringComparer.OrdinalIgnoreCase).Take(3));
-        return new GameObjectManagerValidationResult(
-            true,
-            score,
-            sampleNames,
-            currentNode != 0 ? "遍历过程中遇到无效节点，已基于已收集样本接受候选。" : string.Empty,
-            firstNodeAddress,
-            firstGameObjectAddress,
-            firstNamePointer,
-            firstObjectName);
+        return bestAttempt;
     }
 
-    private static string TrimForLog(string? value)
+    private NameProbeResult ProbeGameObjectName(ulong gameObjectAddress, List<GameObjectManagerProbeObservation> observations)
     {
-        if (string.IsNullOrEmpty(value))
+        var best = NameProbeResult.Invalid;
+
+        foreach (var nameOffset in GetNamePointerOffsets())
         {
-            return string.Empty;
+            var nameFieldAddress = gameObjectAddress + nameOffset;
+            var nameFieldLabel = $"gameObject+0x{nameOffset:X}";
+            var namePointerRead = TryReadUInt64(nameFieldAddress, out var namePointer);
+            var objectName = namePointerRead ? ReadString(namePointer) : string.Empty;
+            var hasReadableName = !string.IsNullOrWhiteSpace(objectName);
+            var hasPlausibleName = IsPlausibleObjectName(objectName);
+            observations.Add(
+                CreateObservation(
+                    "gameobject",
+                    nameFieldLabel,
+                    nameFieldAddress,
+                    namePointerRead ? namePointer : null,
+                    namePointerRead && IsLikelyPointer(namePointer),
+                    textValue: hasReadableName ? objectName : string.Empty,
+                    note: namePointerRead ? string.Empty : "读取失败"));
+
+            var probe = new NameProbeResult(
+                nameFieldLabel,
+                nameOffset,
+                nameFieldAddress,
+                namePointerRead,
+                namePointerRead ? namePointer : null,
+                objectName,
+                hasReadableName,
+                hasPlausibleName,
+                hasReadableName ? string.Empty : $"{nameFieldLabel} 未读到可用对象名。");
+
+            best = ChooseBetterNameProbe(best, probe);
         }
 
-        return value.Length <= 32 ? value : value[..32] + "...";
-    }
-
-    private static bool IsPlausibleObjectName(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value) || value.Length > 64)
-        {
-            return false;
-        }
-
-        var hasLetterOrDigit = false;
-        foreach (var ch in value)
-        {
-            if (char.IsLetterOrDigit(ch))
-            {
-                hasLetterOrDigit = true;
-                continue;
-            }
-
-            if (char.IsWhiteSpace(ch) || ch is '_' or '-' or '.' or '(' or ')' or '[' or ']')
-            {
-                continue;
-            }
-
-            return false;
-        }
-
-        return hasLetterOrDigit;
-    }
-
-    private static bool IsLikelyPointer(ulong address)
-    {
-        return address is > 0x10000 and < 0x0000FFFFFFFFFFFF;
+        return best;
     }
 
     private bool TryFindMatchingComponent(
@@ -763,6 +897,91 @@ public sealed class UnityScanner
                displayName.Contains(targetName, StringComparison.OrdinalIgnoreCase);
     }
 
+    private static IReadOnlyList<ulong> GetUniqueOffsets(params ulong[] offsets)
+    {
+        var unique = new List<ulong>();
+        foreach (var offset in offsets)
+        {
+            if (!unique.Contains(offset))
+            {
+                unique.Add(offset);
+            }
+        }
+
+        return unique;
+    }
+
+    private IReadOnlyList<ulong> GetManagerFieldOffsets() =>
+        GetUniqueOffsets(_layout.GameObjectManagerActiveNodesOffset, 0x10, 0x18, 0x20, 0x28);
+
+    private IReadOnlyList<ulong> GetNodeGameObjectOffsets() =>
+        GetUniqueOffsets(_layout.ObjectNodeGameObjectOffset, 0x10, 0x18);
+
+    private IReadOnlyList<ulong> GetNamePointerOffsets() =>
+        GetUniqueOffsets(_layout.GameObjectNamePointerOffset, 0x60, 0x30);
+
+    private static GomValidationAttempt ChooseBetterAttempt(GomValidationAttempt current, GomValidationAttempt candidate)
+    {
+        if (candidate.IsValid && !current.IsValid)
+        {
+            return candidate;
+        }
+
+        if (candidate.IsValid == current.IsValid && candidate.Score > current.Score)
+        {
+            return candidate;
+        }
+
+        if (!current.IsValid && candidate.Score == current.Score && current.Observations.Length == 0)
+        {
+            return candidate;
+        }
+
+        return current;
+    }
+
+    private static NameProbeResult ChooseBetterNameProbe(NameProbeResult current, NameProbeResult candidate)
+    {
+        if (candidate.HasPlausibleName && !current.HasPlausibleName)
+        {
+            return candidate;
+        }
+
+        if (candidate.HasReadableName && !current.HasReadableName)
+        {
+            return candidate;
+        }
+
+        if (candidate.NamePointerRead && !current.NamePointerRead)
+        {
+            return candidate;
+        }
+
+        return current;
+    }
+
+    private static GameObjectManagerProbeObservation CreateObservation(
+        string stage,
+        string label,
+        ulong address,
+        ulong? value,
+        bool looksLikePointer,
+        string textValue = "",
+        string note = "")
+    {
+        return new GameObjectManagerProbeObservation
+        {
+            Stage = stage,
+            Label = label,
+            Address = address,
+            Value = value,
+            ReadSucceeded = value.HasValue,
+            LooksLikePointer = looksLikePointer,
+            TextValue = textValue,
+            Note = note,
+        };
+    }
+
     private static (byte[] PatternBytes, byte[] WildcardMask) ParsePattern(string pattern)
     {
         var tokens = pattern.Split(' ', StringSplitOptions.RemoveEmptyEntries);
@@ -783,44 +1002,43 @@ public sealed class UnityScanner
         return (patternBytes, wildcardMask);
     }
 
-    private bool TryReadUInt64(ulong address, out ulong value)
+    private bool TryReadRelativeTarget(ulong instructionAddress, out ulong targetAddress)
     {
-        value = 0;
-        try
-        {
-            var bytes = _process.MemRead(address, 8, Vmm.FLAG_NOCACHE);
-            if (bytes.Length != 8)
-            {
-                return false;
-            }
-
-            value = BitConverter.ToUInt64(bytes, 0);
-            return true;
-        }
-        catch
+        targetAddress = 0;
+        if (!TryReadBytes(instructionAddress + 3, 4, out var relativeOffsetBytes))
         {
             return false;
         }
+
+        var relativeOffset = BitConverter.ToInt32(relativeOffsetBytes, 0);
+        targetAddress = (ulong)((long)instructionAddress + 7 + relativeOffset);
+        return targetAddress != 0;
+    }
+
+    private bool TryReadBytes(ulong address, int length, out byte[] bytes) => _memory.TryReadBytes(address, length, out bytes);
+
+    private bool TryReadUInt64(ulong address, out ulong value)
+    {
+        value = 0;
+        if (!TryReadBytes(address, 8, out var bytes))
+        {
+            return false;
+        }
+
+        value = BitConverter.ToUInt64(bytes, 0);
+        return true;
     }
 
     private bool TryReadInt32(ulong address, out int value)
     {
         value = 0;
-        try
-        {
-            var bytes = _process.MemRead(address, 4, Vmm.FLAG_NOCACHE);
-            if (bytes.Length != 4)
-            {
-                return false;
-            }
-
-            value = BitConverter.ToInt32(bytes, 0);
-            return true;
-        }
-        catch
+        if (!TryReadBytes(address, 4, out var bytes))
         {
             return false;
         }
+
+        value = BitConverter.ToInt32(bytes, 0);
+        return true;
     }
 
     private ulong ReadUInt64(ulong address)
@@ -835,9 +1053,21 @@ public sealed class UnityScanner
             return string.Empty;
         }
 
+        if (!TryReadBytes(address, _layout.MaxStringLength, out var bytes))
+        {
+            return string.Empty;
+        }
+
+        var zeroIndex = Array.IndexOf(bytes, (byte)0);
+        var textLength = zeroIndex >= 0 ? zeroIndex : bytes.Length;
+        if (textLength <= 0)
+        {
+            return string.Empty;
+        }
+
         try
         {
-            return _process.MemReadString(Encoding.UTF8, address, (uint)_layout.MaxStringLength, Vmm.FLAG_NOCACHE, true).TrimEnd('\0');
+            return Encoding.UTF8.GetString(bytes, 0, textLength).Trim();
         }
         catch
         {
@@ -845,9 +1075,77 @@ public sealed class UnityScanner
         }
     }
 
+    private static bool IsPlausibleObjectName(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Length > 64)
+        {
+            return false;
+        }
+
+        var hasLetterOrDigit = false;
+        foreach (var ch in value)
+        {
+            if (char.IsLetterOrDigit(ch))
+            {
+                hasLetterOrDigit = true;
+                continue;
+            }
+
+            if (char.IsWhiteSpace(ch) || ch is '_' or '-' or '.' or '(' or ')' or '[' or ']')
+            {
+                continue;
+            }
+
+            return false;
+        }
+
+        return hasLetterOrDigit;
+    }
+
+    private static bool IsLikelyPointer(ulong address)
+    {
+        return address is > 0x10000 and < 0x0000FFFFFFFFFFFF;
+    }
+
+    private static GameObjectManagerCandidateDescriptor CreateDescriptor(GameObjectManagerProbeResult candidate) =>
+        new(
+            candidate.ModuleName,
+            candidate.PatternName,
+            candidate.InstructionAddress,
+            candidate.RipTargetAddress,
+            candidate.CandidateSource,
+            candidate.ManagerAddress,
+            candidate.PrefilterRejected,
+            candidate.PrefilterReason);
+
     private readonly record struct ModuleCandidate(string Name, ulong BaseAddress);
     private readonly record struct GameObjectManagerPatternSpec(string Name, string Pattern);
-    private readonly record struct GameObjectManagerAddressCandidate(string Source, ulong Address);
+    private readonly record struct GameObjectManagerCandidateDescriptor(
+        string ModuleName,
+        string PatternName,
+        ulong InstructionAddress,
+        ulong RipTargetAddress,
+        string CandidateSource,
+        ulong CandidateAddress,
+        bool PrefilterRejected,
+        string PrefilterReason);
+
+    private readonly record struct CandidatePrefilterResult(bool Rejected, string Reason);
+
+    private readonly record struct NameProbeResult(
+        string NamePointerLabel,
+        ulong NamePointerOffset,
+        ulong NamePointerFieldAddress,
+        bool NamePointerRead,
+        ulong? NamePointerValue,
+        string ObjectName,
+        bool HasReadableName,
+        bool HasPlausibleName,
+        string FailureReason)
+    {
+        public static NameProbeResult Invalid { get; } = new(string.Empty, 0, 0, false, null, string.Empty, false, false, string.Empty);
+    }
+
     private readonly record struct ComponentSummary(
         int DeclaredComponentCount,
         int ValidComponentEntries,
@@ -868,31 +1166,171 @@ public sealed class UnityScanner
         public static UnityIl2CppClassInfo Invalid { get; } = new(0, 0, 0, string.Empty, string.Empty, false);
     }
 
-    private readonly record struct GameObjectManagerValidationResult(
+    private readonly record struct GomValidationAttempt(
+        string Interpretation,
         bool IsValid,
         int Score,
         string SampleNames,
         string FailureReason,
-        ulong? FirstNodeAddress = null,
-        ulong? FirstGameObjectAddress = null,
-        ulong? FirstNamePointer = null,
-        string? FirstObjectName = null);
+        string ValidationPath,
+        string ManagerFieldLabel,
+        ulong? ManagerFieldOffset,
+        ulong? ManagerFieldAddress,
+        ulong? ManagerFieldValue,
+        string NodeFieldLabel,
+        ulong? NodeFieldOffset,
+        ulong? NodeFieldAddress,
+        ulong? NodeFieldValue,
+        ulong? NextNodeValue,
+        ulong? GameObjectAddress,
+        string NamePointerLabel,
+        ulong? NamePointerOffset,
+        ulong? NamePointerAddress,
+        ulong? NamePointerValue,
+        string ObjectName,
+        int? DeclaredComponentCount,
+        int? ValidComponentEntries,
+        string SampleComponentPointers,
+        GameObjectManagerProbeObservation[] Observations)
+    {
+        public static GomValidationAttempt Invalid(string interpretation, string failureReason) =>
+            new(
+                interpretation,
+                false,
+                0,
+                string.Empty,
+                failureReason,
+                string.Empty,
+                string.Empty,
+                null,
+                null,
+                null,
+                string.Empty,
+                null,
+                null,
+                null,
+                null,
+                null,
+                string.Empty,
+                null,
+                null,
+                null,
+                string.Empty,
+                null,
+                null,
+                string.Empty,
+                Array.Empty<GameObjectManagerProbeObservation>());
+
+        public static GomValidationAttempt FromFailure(string interpretation, List<GameObjectManagerProbeObservation> observations, string failureReason) =>
+            Invalid(interpretation, failureReason) with { Observations = observations.ToArray() };
+    }
 }
 
-public readonly record struct GameObjectManagerProbeResult(
-    string ModuleName,
-    string PatternName,
-    ulong InstructionAddress,
-    string CandidateSource,
-    ulong ManagerAddress,
-    bool IsValid,
-    int Score,
-    string SampleNames,
-    string FailureReason,
-    ulong? FirstNodeAddress,
-    ulong? FirstGameObjectAddress,
-    ulong? FirstNamePointer,
-    string? FirstObjectName);
+public sealed record GameObjectManagerProbeDump
+{
+    public DateTime GeneratedAtUtc { get; init; } = DateTime.UtcNow;
+
+    public string ProcessName { get; init; } = string.Empty;
+
+    public int ProcessId { get; init; }
+
+    public UnityNativeLayout Layout { get; init; } = UnityNativeLayout.Default;
+
+    public GameObjectManagerProbeResult[] Candidates { get; init; } = Array.Empty<GameObjectManagerProbeResult>();
+}
+
+public sealed record GameObjectManagerProbeResult
+{
+    public UnityNativeLayout Layout { get; init; } = UnityNativeLayout.Default;
+
+    public string ModuleName { get; init; } = string.Empty;
+
+    public string PatternName { get; init; } = string.Empty;
+
+    public ulong InstructionAddress { get; init; }
+
+    public ulong RipTargetAddress { get; init; }
+
+    public string CandidateSource { get; init; } = string.Empty;
+
+    public ulong ManagerAddress { get; init; }
+
+    public bool PrefilterRejected { get; init; }
+
+    public string PrefilterReason { get; init; } = string.Empty;
+
+    public bool IsValid { get; init; }
+
+    public int Score { get; init; }
+
+    public string SampleNames { get; init; } = string.Empty;
+
+    public string FailureReason { get; init; } = string.Empty;
+
+    public string Interpretation { get; init; } = string.Empty;
+
+    public string ValidationPath { get; init; } = string.Empty;
+
+    public string ManagerFieldLabel { get; init; } = string.Empty;
+
+    public ulong? ManagerFieldOffset { get; init; }
+
+    public ulong? ManagerFieldAddress { get; init; }
+
+    public ulong? ManagerFieldValue { get; init; }
+
+    public string NodeFieldLabel { get; init; } = string.Empty;
+
+    public ulong? NodeFieldOffset { get; init; }
+
+    public ulong? NodeFieldAddress { get; init; }
+
+    public ulong? NodeFieldValue { get; init; }
+
+    public ulong? NextNodeValue { get; init; }
+
+    public ulong? GameObjectAddress { get; init; }
+
+    public string NamePointerLabel { get; init; } = string.Empty;
+
+    public ulong? NamePointerOffset { get; init; }
+
+    public ulong? NamePointerAddress { get; init; }
+
+    public ulong? NamePointerValue { get; init; }
+
+    public string ObjectName { get; init; } = string.Empty;
+
+    public int? DeclaredComponentCount { get; init; }
+
+    public int? ValidComponentEntries { get; init; }
+
+    public string SampleComponentPointers { get; init; } = string.Empty;
+
+    public GameObjectManagerProbeObservation[] Observations { get; init; } = Array.Empty<GameObjectManagerProbeObservation>();
+
+    public RecordedMemoryBlock[] ReplayMemoryBlocks { get; init; } = Array.Empty<RecordedMemoryBlock>();
+
+}
+
+public sealed record GameObjectManagerProbeObservation
+{
+    public string Stage { get; init; } = string.Empty;
+
+    public string Label { get; init; } = string.Empty;
+
+    public ulong Address { get; init; }
+
+    public ulong? Value { get; init; }
+
+    public bool ReadSucceeded { get; init; }
+
+    public bool LooksLikePointer { get; init; }
+
+    public string TextValue { get; init; } = string.Empty;
+
+    public string Note { get; init; } = string.Empty;
+}
 
 public readonly record struct UnityObjectInfo(
     ulong NodeAddress,

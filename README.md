@@ -65,6 +65,9 @@ dotnet run
 dotnet run --project VrcDmaFish.csproj -- --debug
 dotnet run --project VrcDmaFish.csproj -- --debug --no-ui-window
 dotnet run --project VrcDmaFish.csproj -- --dump-objects 128 --debug --no-wizard
+dotnet run --project VrcDmaFish.csproj -- --dump-gom-candidates 64 --debug --no-wizard
+dotnet run --project VrcDmaFish.csproj -- --dump-gom-candidates-json .\logs\gom-candidates.json --debug --no-wizard
+dotnet run --project VrcDmaFish.csproj -- --validate-gom-candidate .\logs\gom-candidates.json
 ```
 
 - `--debug`：开启详细日志，包含状态切换、DMA 初始化、Unity 扫描细节。
@@ -73,6 +76,9 @@ dotnet run --project VrcDmaFish.csproj -- --dump-objects 128 --debug --no-wizard
 - `--no-ui-window`：不拉起独立监控窗口，直接在当前控制台显示状态。
 - `--dump-objects [数量]`：尝试转储 Unity 对象名，便于确认 `FishingLogic` 真实对象名和 `GameObjectManager` 是否有效。
   现在还会额外输出组件数量以及前几个组件的 `klass` / 类名样本，方便判断是否发生混淆。
+- `--dump-gom-candidates [数量]`：输出 `GameObjectManager` 候选的详细校验信息，包括 `module / pattern / hit / source / candidate`，以及 `manager/node/gameObject/namePtr` 的原始探测值。
+- `--dump-gom-candidates-json 路径`：把候选详细信息和回放所需的原始内存读取一并写成 JSON，便于后续离线复盘。
+- `--validate-gom-candidate <json/path>`：基于 `--dump-gom-candidates-json` 生成的 JSON 重新执行候选校验，不依赖真实 DMA 硬件。
 - `--log-file 路径`：自定义日志文件位置；默认会写到仓库下的 `logs\` 目录，若文件日志等级设为 `none` 则不生成日志文件。
 
 ## Il2CppInspectorPro 工作流

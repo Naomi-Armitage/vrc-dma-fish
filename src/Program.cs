@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.Versioning;
+using System.Text.Json;
 using Spectre.Console;
 using VrcDmaFish.Core;
 using VrcDmaFish.Inputs;
@@ -63,6 +64,25 @@ public static class Program
                 Logger.Error("配置", $"交互式配置失败: {ex.Message}");
                 return 1;
             }
+        }
+
+        if (!string.IsNullOrWhiteSpace(options.ValidateGomCandidateInput))
+        {
+            return RunValidateGomCandidate(options.ValidateGomCandidateInput);
+        }
+
+        if (options.DumpGomCandidatesLimit.HasValue || !string.IsNullOrWhiteSpace(options.DumpGomCandidatesJsonPath))
+        {
+            if (!OperatingSystem.IsWindows())
+            {
+                Logger.Error("调试", "GOM 候选转储仅支持 Windows。");
+                return 1;
+            }
+
+            return RunDumpGomCandidates(
+                config.SignalSource,
+                options.DumpGomCandidatesLimit ?? 64,
+                options.DumpGomCandidatesJsonPath);
         }
 
         if (options.DumpObjectsLimit.HasValue)
@@ -328,6 +348,165 @@ public static class Program
         return 0;
     }
 
+    [SupportedOSPlatform("windows")]
+    private static int RunDumpGomCandidates(SignalSourceConfig config, int limit, string? jsonOutputPath)
+    {
+        if (!string.Equals(config.Type, "Dma", StringComparison.OrdinalIgnoreCase))
+        {
+            Logger.Error("调试", "GOM 候选转储仅支持 DMA 模式。");
+            return 1;
+        }
+
+        using var provider = new DmaProvider(config);
+        if (!provider.HasConnectedProcess)
+        {
+            Logger.Error("调试", "DMA 未连接到目标进程，无法执行 GOM 候选转储。");
+            return 1;
+        }
+
+        var candidates = provider.DumpGameObjectManagerCandidates(limit, includeReplayData: !string.IsNullOrWhiteSpace(jsonOutputPath));
+        if (candidates.Count == 0)
+        {
+            Logger.Warn("调试", "未能转储任何 GOM 候选。");
+            return 1;
+        }
+
+        Console.WriteLine($"GOM candidates: process={provider.ConnectedProcessName}(PID={provider.ConnectedProcessId}) count={candidates.Count}");
+        for (var i = 0; i < candidates.Count; i++)
+        {
+            PrintGomCandidate(candidates[i], i + 1);
+        }
+
+        if (!string.IsNullOrWhiteSpace(jsonOutputPath))
+        {
+            var fullPath = Path.GetFullPath(jsonOutputPath);
+            var directory = Path.GetDirectoryName(fullPath);
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            var dump = new GameObjectManagerProbeDump
+            {
+                GeneratedAtUtc = DateTime.UtcNow,
+                ProcessName = provider.ConnectedProcessName ?? config.ProcessName,
+                ProcessId = provider.ConnectedProcessId ?? 0,
+                Layout = config.GetUnityNativeLayout(),
+                Candidates = candidates.ToArray(),
+            };
+
+            var json = JsonSerializer.Serialize(dump, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(fullPath, json);
+            Console.WriteLine($"JSON written: {fullPath}");
+        }
+
+        return 0;
+    }
+
+    private static int RunValidateGomCandidate(string input)
+    {
+        string payload;
+        if (File.Exists(input))
+        {
+            payload = File.ReadAllText(input);
+        }
+        else
+        {
+            payload = input;
+        }
+
+        var jsonOptions = new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true,
+        };
+
+        GameObjectManagerProbeResult[] candidates;
+        try
+        {
+            var dump = JsonSerializer.Deserialize<GameObjectManagerProbeDump>(payload, jsonOptions);
+            if (dump?.Candidates is { Length: > 0 })
+            {
+                candidates = dump.Candidates;
+            }
+            else
+            {
+                var singleCandidate = JsonSerializer.Deserialize<GameObjectManagerProbeResult>(payload, jsonOptions);
+                if (singleCandidate is null)
+                {
+                    Logger.Error("调试", "无法解析 GOM 候选 JSON。");
+                    return 1;
+                }
+
+                candidates = new[] { singleCandidate };
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("调试", $"解析 GOM 候选 JSON 失败: {ex.Message}");
+            return 1;
+        }
+
+        Console.WriteLine($"Revalidating {candidates.Length} recorded GOM candidate(s)...");
+        for (var i = 0; i < candidates.Length; i++)
+        {
+            if (candidates[i].ReplayMemoryBlocks.Length == 0)
+            {
+                Console.WriteLine($"[{i + 1}] skip: candidate has no replay memory blocks");
+                continue;
+            }
+
+            var revalidated = UnityScanner.RevalidateRecordedCandidate(candidates[i]);
+            PrintGomCandidate(revalidated, i + 1);
+        }
+
+        return 0;
+    }
+
+    private static void PrintGomCandidate(GameObjectManagerProbeResult candidate, int index)
+    {
+        Console.WriteLine(
+            $"[{index}] module={candidate.ModuleName} pattern={candidate.PatternName} hit=0x{candidate.InstructionAddress:X} source={candidate.CandidateSource} candidate=0x{candidate.ManagerAddress:X} valid={candidate.IsValid} score={candidate.Score} interpretation={candidate.Interpretation}");
+        Console.WriteLine($"    prefilter={(candidate.PrefilterRejected ? candidate.PrefilterReason : "ok")}");
+        Console.WriteLine(
+            $"    manager={FormatProbe(candidate.ManagerFieldLabel, candidate.ManagerFieldAddress, candidate.ManagerFieldValue)} node={FormatProbe(candidate.NodeFieldLabel, candidate.NodeFieldAddress, candidate.NodeFieldValue)} next={FormatNullableHex(candidate.NextNodeValue)}");
+        Console.WriteLine(
+            $"    gameObject={FormatNullableHex(candidate.GameObjectAddress)} namePtr={FormatProbe(candidate.NamePointerLabel, candidate.NamePointerAddress, candidate.NamePointerValue)} objectName='{candidate.ObjectName}'");
+
+        if (candidate.DeclaredComponentCount.HasValue)
+        {
+            Console.WriteLine(
+                $"    components={candidate.ValidComponentEntries ?? 0}/{candidate.DeclaredComponentCount.Value} samples=[{candidate.SampleComponentPointers}]");
+        }
+
+        if (!string.IsNullOrWhiteSpace(candidate.ValidationPath))
+        {
+            Console.WriteLine($"    path={candidate.ValidationPath}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(candidate.FailureReason))
+        {
+            Console.WriteLine($"    reason={candidate.FailureReason}");
+        }
+
+        foreach (var observation in candidate.Observations)
+        {
+            Console.WriteLine(
+                $"    obs stage={observation.Stage} label={observation.Label} addr=0x{observation.Address:X} value={FormatNullableHex(observation.Value)} ptr={observation.LooksLikePointer} read={observation.ReadSucceeded} text='{observation.TextValue}' note='{observation.Note}'");
+        }
+    }
+
+    private static string FormatProbe(string label, ulong? address, ulong? value)
+    {
+        if (string.IsNullOrWhiteSpace(label) || !address.HasValue)
+        {
+            return "<n/a>";
+        }
+
+        return $"{label}@0x{address.Value:X} => {FormatNullableHex(value)}";
+    }
+
+    private static string FormatNullableHex(ulong? value) => value.HasValue ? $"0x{value.Value:X}" : "<n/a>";
+
     private static DashboardSessionWriter? TryStartDashboardWindow()
     {
         try
@@ -561,7 +740,10 @@ public static class Program
         string? LogFilePath,
         bool UseSeparateUiWindow,
         string? DashboardClientSnapshotPath,
-        int? DumpObjectsLimit)
+        int? DumpObjectsLimit,
+        int? DumpGomCandidatesLimit,
+        string? DumpGomCandidatesJsonPath,
+        string? ValidateGomCandidateInput)
     {
         public static RuntimeOptions Parse(string[] args)
         {
@@ -575,6 +757,9 @@ public static class Program
             var useSeparateUiWindow = true;
             string? dashboardClientSnapshotPath = null;
             int? dumpObjectsLimit = null;
+            int? dumpGomCandidatesLimit = null;
+            string? dumpGomCandidatesJsonPath = null;
+            string? validateGomCandidateInput = null;
 
             for (var i = 0; i < args.Length; i++)
             {
@@ -651,6 +836,36 @@ public static class Program
                     continue;
                 }
 
+                if (string.Equals(args[i], "--dump-gom-candidates", StringComparison.OrdinalIgnoreCase))
+                {
+                    dumpGomCandidatesLimit = 64;
+                    runWizard = false;
+
+                    if (i + 1 < args.Length && int.TryParse(args[i + 1], out var parsedCandidateLimit) && parsedCandidateLimit > 0)
+                    {
+                        dumpGomCandidatesLimit = parsedCandidateLimit;
+                        i++;
+                    }
+
+                    continue;
+                }
+
+                if (string.Equals(args[i], "--dump-gom-candidates-json", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                {
+                    dumpGomCandidatesJsonPath = Path.GetFullPath(args[++i]);
+                    dumpGomCandidatesLimit ??= 64;
+                    runWizard = false;
+                    continue;
+                }
+
+                if (string.Equals(args[i], "--validate-gom-candidate", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                {
+                    validateGomCandidateInput = args[++i];
+                    runWizard = false;
+                    useSeparateUiWindow = false;
+                    continue;
+                }
+
                 if (string.Equals(args[i], "--no-wizard", StringComparison.OrdinalIgnoreCase))
                 {
                     runWizard = false;
@@ -673,7 +888,10 @@ public static class Program
                 logFilePath,
                 useSeparateUiWindow,
                 dashboardClientSnapshotPath,
-                dumpObjectsLimit);
+                dumpObjectsLimit,
+                dumpGomCandidatesLimit,
+                dumpGomCandidatesJsonPath,
+                validateGomCandidateInput);
         }
 
         public LogLevel GetBootstrapConsoleLevel()

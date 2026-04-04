@@ -1,4 +1,5 @@
 using System.Runtime.Versioning;
+using System.Runtime.InteropServices;
 using Vmmsharp;
 using VrcDmaFish.Models;
 using VrcDmaFish.UI;
@@ -11,7 +12,7 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
     private const int PositionDisappearFramesForCatch = 2;
     private readonly SignalSourceConfig _config;
     private Vmm? _vmm;
-    private VmmProcess? _process;
+    private IProcessMemory? _memory;
     private ulong _targetObjectAddr;
     private SignalOffsets? _offsets;
     private PositionOffsets? _positionOffsets;
@@ -28,7 +29,11 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
 
     public bool IsReady { get; private set; }
 
-    public bool HasConnectedProcess => _process is not null && _process.IsValid;
+    public bool HasConnectedProcess => _memory is not null && _memory.IsValid;
+
+    public string? ConnectedProcessName => _memory?.Name;
+
+    public int? ConnectedProcessId => _memory?.ProcessId;
 
     private void Initialize()
     {
@@ -42,19 +47,19 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
 
             _vmm = new Vmm("-device", "fpga");
             Logger.Debug("DMA", $"开始初始化 DMA，目标进程名 '{_config.ProcessName}'。");
-            _process = ResolveProcess(_config.ProcessName);
+            _memory = ResolveProcessMemory(_config.ProcessName);
 
-            if (_process is null || !_process.IsValid)
+            if (_memory is null || !_memory.IsValid)
             {
                 Logger.Warn("DMA", BuildProcessNotFoundMessage(_config.ProcessName));
                 return;
             }
 
-            Logger.Info("DMA", $"已连接到 {_process.Name} (PID: {_process.PID})。");
+            Logger.Info("DMA", $"已连接到 {_memory.Name} (PID: {_memory.ProcessId})。");
 
             if (!_config.TryGetTargetObjectAddress(out _targetObjectAddr))
             {
-                var scanner = new UnityScanner(_process, _config.GetUnityNativeLayout());
+                var scanner = new UnityScanner(_memory, _config.GetUnityNativeLayout());
                 var gameObjectManagerAddress = 0UL;
                 _config.TryGetTargetKlassAddress(out var targetKlassAddress);
                 if (_config.TryGetGameObjectManagerAddress(out var configuredGameObjectManagerAddress))
@@ -183,7 +188,7 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
 
     public FishContext Read()
     {
-        if (!IsReady || _process is null)
+        if (!IsReady || _memory is null)
         {
             return new FishContext();
         }
@@ -250,18 +255,23 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
     public void Dispose()
     {
         IsReady = false;
+        _memory?.Dispose();
         _vmm?.Dispose();
     }
 
     private T ReadValue<T>(ulong address) where T : unmanaged
     {
-        if (_process is null)
+        if (_memory is null)
         {
             throw new InvalidOperationException("DMA 进程尚未初始化。");
         }
 
-        return _process.MemReadAs<T>(address, Vmm.FLAG_NOCACHE)
-            ?? throw new InvalidOperationException($"读取 0x{address:X} 处的 {typeof(T).Name} 失败。");
+        if (!_memory.TryReadBytes(address, Marshal.SizeOf<T>(), out var bytes))
+        {
+            throw new InvalidOperationException($"读取 0x{address:X} 处的 {typeof(T).Name} 失败。");
+        }
+
+        return MemoryMarshal.Read<T>(bytes);
     }
 
     private bool TryReadPositionData(FishContext context)
@@ -301,7 +311,7 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
         return Math.Clamp(normalizedDistance, 0f, 1f);
     }
 
-    private VmmProcess? ResolveProcess(string? configuredProcessName)
+    private IProcessMemory? ResolveProcessMemory(string? configuredProcessName)
     {
         if (_vmm is null || string.IsNullOrWhiteSpace(configuredProcessName))
         {
@@ -313,14 +323,14 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
             var process = _vmm.GetProcessByName(candidateName);
             if (process is not null && process.IsValid)
             {
-                return process;
+                return new VmmProcessMemory(process);
             }
         }
 
-        return FindProcessFromSnapshot(configuredProcessName);
+        return FindProcessMemoryFromSnapshot(configuredProcessName);
     }
 
-    private VmmProcess? FindProcessFromSnapshot(string configuredProcessName)
+    private IProcessMemory? FindProcessMemoryFromSnapshot(string configuredProcessName)
     {
         if (_vmm is null)
         {
@@ -336,12 +346,13 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
 
         if (exactMatch is not null)
         {
-            return exactMatch;
+            return new VmmProcessMemory(exactMatch);
         }
 
-        return processes.FirstOrDefault(process =>
+        var fuzzyMatch = processes.FirstOrDefault(process =>
             process.IsValid &&
             NormalizeProcessName(process.Name).Contains(normalizedTarget, StringComparison.OrdinalIgnoreCase));
+        return fuzzyMatch is null ? null : new VmmProcessMemory(fuzzyMatch);
     }
 
     private string BuildProcessNotFoundMessage(string configuredProcessName)
@@ -539,7 +550,7 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
 
     public ulong ResolveGameObjectManagerAddress()
     {
-        if (!HasConnectedProcess || _process is null)
+        if (!HasConnectedProcess || _memory is null)
         {
             return 0;
         }
@@ -549,31 +560,31 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
             return configuredAddress;
         }
 
-        var scanner = new UnityScanner(_process, _config.GetUnityNativeLayout());
+        var scanner = new UnityScanner(_memory, _config.GetUnityNativeLayout());
         return scanner.FindGameObjectManager(_config.GetGameObjectManagerPatternCandidates());
     }
 
     public IReadOnlyList<UnityObjectInfo> DumpUnityObjects(int limit)
     {
-        if (!HasConnectedProcess || _process is null)
+        if (!HasConnectedProcess || _memory is null)
         {
             return Array.Empty<UnityObjectInfo>();
         }
 
-        var scanner = new UnityScanner(_process, _config.GetUnityNativeLayout());
+        var scanner = new UnityScanner(_memory, _config.GetUnityNativeLayout());
         var gameObjectManagerAddress = ResolveGameObjectManagerAddress();
         Logger.Debug("DMA", $"对象转储使用的 GameObjectManager 地址 0x{gameObjectManagerAddress:X}。");
         return scanner.DumpObjects(limit, gameObjectManagerAddress, _config.GetGameObjectManagerPatternCandidates());
     }
 
-    public IReadOnlyList<GameObjectManagerProbeResult> DumpGameObjectManagerCandidates(int limit)
+    public IReadOnlyList<GameObjectManagerProbeResult> DumpGameObjectManagerCandidates(int limit, bool includeReplayData = false)
     {
-        if (!HasConnectedProcess || _process is null || limit <= 0)
+        if (!HasConnectedProcess || _memory is null || limit <= 0)
         {
             return Array.Empty<GameObjectManagerProbeResult>();
         }
 
-        var scanner = new UnityScanner(_process, _config.GetUnityNativeLayout());
-        return scanner.ProbeGameObjectManagerCandidates(_config.GetGameObjectManagerPatternCandidates(), limit);
+        var scanner = new UnityScanner(_memory, _config.GetUnityNativeLayout());
+        return scanner.ProbeGameObjectManagerCandidates(_config.GetGameObjectManagerPatternCandidates(), limit, includeReplayData);
     }
 }
