@@ -242,6 +242,7 @@ public sealed class SignalSourceConfig
     public string Type { get; set; } = "Mock";
     public string ProcessName { get; set; } = "VRChat";
     public string TargetObjectName { get; set; } = "FishingLogic";
+    public string? TargetKlassAddress { get; set; }
     public string? GameObjectManagerPattern { get; set; }
     public string[]? GameObjectManagerPatterns { get; set; }
     public string? GameObjectManagerAddress { get; set; }
@@ -258,12 +259,27 @@ public sealed class SignalSourceConfig
     public string? ObjectNodePreviousOffset { get; set; }
     public string? ObjectNodeNextOffset { get; set; }
     public string? ObjectNodeGameObjectOffset { get; set; }
+    public string? GameObjectComponentArrayOffset { get; set; }
+    public string? GameObjectComponentCountOffset { get; set; }
     public string? GameObjectNamePointerOffset { get; set; }
+    public string? ComponentArrayElementStride { get; set; }
+    public string? ComponentArrayElementTypeInfoOffset { get; set; }
+    public string? ComponentArrayElementComponentPointerOffset { get; set; }
+    public string? ComponentKlassPointerOffset { get; set; }
+    public string? ComponentGameObjectOffset { get; set; }
+    public string? Il2CppClassNamePointerOffset { get; set; }
+    public string? Il2CppClassNamespacePointerOffset { get; set; }
+    public string? Il2CppClassParentPointerOffset { get; set; }
+    public int? MaxComponentCount { get; set; }
+    public int? MaxStringLength { get; set; }
+    public int? MaxClassParentDepth { get; set; }
     public Il2CppInspectorProConfig? Il2CppInspectorPro { get; set; } = new();
 
     public bool TryGetGameObjectManagerAddress(out ulong address) => TryParseAddress(GameObjectManagerAddress, out address);
 
     public bool TryGetTargetObjectAddress(out ulong address) => TryParseAddress(TargetObjectAddress, out address);
+
+    public bool TryGetTargetKlassAddress(out ulong address) => TryParseAddress(TargetKlassAddress, out address);
 
     public IReadOnlyList<string> GetGameObjectManagerPatternCandidates()
     {
@@ -382,6 +398,71 @@ public sealed class SignalSourceConfig
             layout = layout with { GameObjectNamePointerOffset = namePointerOffset };
         }
 
+        if (TryParseAddress(GameObjectComponentArrayOffset, out var componentArrayOffset))
+        {
+            layout = layout with { GameObjectComponentArrayOffset = componentArrayOffset };
+        }
+
+        if (TryParseAddress(GameObjectComponentCountOffset, out var componentCountOffset))
+        {
+            layout = layout with { GameObjectComponentCountOffset = componentCountOffset };
+        }
+
+        if (TryParseAddress(ComponentArrayElementStride, out var componentArrayElementStride))
+        {
+            layout = layout with { ComponentArrayElementStride = componentArrayElementStride };
+        }
+
+        if (TryParseAddress(ComponentArrayElementTypeInfoOffset, out var componentArrayTypeInfoOffset))
+        {
+            layout = layout with { ComponentArrayElementTypeInfoOffset = componentArrayTypeInfoOffset };
+        }
+
+        if (TryParseAddress(ComponentArrayElementComponentPointerOffset, out var componentArrayPointerOffset))
+        {
+            layout = layout with { ComponentArrayElementComponentPointerOffset = componentArrayPointerOffset };
+        }
+
+        if (TryParseAddress(ComponentKlassPointerOffset, out var componentKlassPointerOffset))
+        {
+            layout = layout with { ComponentKlassPointerOffset = componentKlassPointerOffset };
+        }
+
+        if (TryParseAddress(ComponentGameObjectOffset, out var componentGameObjectOffset))
+        {
+            layout = layout with { ComponentGameObjectOffset = componentGameObjectOffset };
+        }
+
+        if (TryParseAddress(Il2CppClassNamePointerOffset, out var il2CppClassNamePointerOffset))
+        {
+            layout = layout with { Il2CppClassNamePointerOffset = il2CppClassNamePointerOffset };
+        }
+
+        if (TryParseAddress(Il2CppClassNamespacePointerOffset, out var il2CppClassNamespacePointerOffset))
+        {
+            layout = layout with { Il2CppClassNamespacePointerOffset = il2CppClassNamespacePointerOffset };
+        }
+
+        if (TryParseAddress(Il2CppClassParentPointerOffset, out var il2CppClassParentPointerOffset))
+        {
+            layout = layout with { Il2CppClassParentPointerOffset = il2CppClassParentPointerOffset };
+        }
+
+        if (MaxComponentCount is > 0 and < 100000)
+        {
+            layout = layout with { MaxComponentCount = MaxComponentCount.Value };
+        }
+
+        if (MaxStringLength is > 0 and < 4096)
+        {
+            layout = layout with { MaxStringLength = MaxStringLength.Value };
+        }
+
+        if (MaxClassParentDepth is > 0 and < 256)
+        {
+            layout = layout with { MaxClassParentDepth = MaxClassParentDepth.Value };
+        }
+
         return layout;
     }
 
@@ -432,10 +513,23 @@ public readonly record struct UnityNativeLayout(
     ulong ObjectNodePreviousOffset,
     ulong ObjectNodeNextOffset,
     ulong ObjectNodeGameObjectOffset,
-    ulong GameObjectNamePointerOffset)
+    ulong GameObjectComponentArrayOffset,
+    ulong GameObjectComponentCountOffset,
+    ulong GameObjectNamePointerOffset,
+    ulong ComponentArrayElementStride,
+    ulong ComponentArrayElementTypeInfoOffset,
+    ulong ComponentArrayElementComponentPointerOffset,
+    ulong ComponentKlassPointerOffset,
+    ulong ComponentGameObjectOffset,
+    ulong Il2CppClassNamePointerOffset,
+    ulong Il2CppClassNamespacePointerOffset,
+    ulong Il2CppClassParentPointerOffset,
+    int MaxComponentCount,
+    int MaxStringLength,
+    int MaxClassParentDepth)
 {
     // Unity 2022.3.x native GameObjectManager / ObjectNode / GameObject defaults.
-    public static UnityNativeLayout Default { get; } = new(0x28, 0x00, 0x08, 0x10, 0x60);
+    public static UnityNativeLayout Default { get; } = new(0x28, 0x00, 0x08, 0x10, 0x30, 0x40, 0x60, 0x10, 0x00, 0x08, 0x00, 0x10, 0x10, 0x18, 0x48, 1000, 64, 8);
 }
 
 public readonly record struct Il2CppInspectorFieldSelection(

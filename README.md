@@ -17,7 +17,11 @@
 - Unity 对象遍历默认切到 Unity 2022.3.x 的 Native `activeObjectNodes` 链表：
   - `GameObjectManager.activeObjectNodes = 0x28`
   - `ObjectNode.next = 0x08`，`ObjectNode.gameObject = 0x10`
+  - `GameObject.componentArray = 0x30`，`GameObject.componentCount = 0x40`
   - `GameObject.namePtr = 0x60`
+  - 组件数组默认按 `0x10` 步长遍历，并校验 `componentCount` 在合理范围内后再读取。
+  - `Il2CppClass.namePtr = 0x10`，`namespazePtr = 0x18`，`parentPtr = 0x48`
+  - 当提供 `TargetKlassAddress` 时，扫描器会优先按 `component.klassPtr == TargetKlassAddress` 直接定位目标组件，绕过混淆字符串。
   - 上述偏移都支持配置覆盖，方便后续版本漂移时微调。
 - 新增 `Il2CppInspectorPro` 导出接入：
   - 可直接读取 `Il2CppInspectorPro` 导出的 C# stub（单个 `types.cs` 或整个导出目录）。
@@ -68,6 +72,7 @@ dotnet run --project VrcDmaFish.csproj -- --dump-objects 128 --debug --no-wizard
 - `--file-log-level <debug|info|warn|error|none>`：日志文件等级；可以把控制台设成 `warn`，文件保留 `info` 或 `debug`。
 - `--no-ui-window`：不拉起独立监控窗口，直接在当前控制台显示状态。
 - `--dump-objects [数量]`：尝试转储 Unity 对象名，便于确认 `FishingLogic` 真实对象名和 `GameObjectManager` 是否有效。
+  现在还会额外输出组件数量以及前几个组件的 `klass` / 类名样本，方便判断是否发生混淆。
 - `--log-file 路径`：自定义日志文件位置；默认会写到仓库下的 `logs\` 目录，若文件日志等级设为 `none` 则不生成日志文件。
 
 ## Il2CppInspectorPro 工作流
@@ -83,6 +88,7 @@ dotnet run --project VrcDmaFish.csproj -- --dump-objects 128 --debug --no-wizard
 - `Il2CppInspectorPro` 这条链路只负责解析字段偏移，例如 `tension`、`fishPosition`、`barCenter`。
 - `GameObjectManager` / `TargetObjectAddress` 仍然属于运行时对象定位，继续走特征扫描或手填地址。
 - 当前解析器读取的是 C# stub 中的实例字段偏移属性，因此字段名要和导出结果里的声明一致。
+- 如果游戏类名被混淆，推荐由内部 Proxy 把目标组件的 `Il2CppClass*` 地址传给外部，然后配置 `TargetKlassAddress` 直接做指针匹配。
 
 ## 配置说明
 
@@ -116,9 +122,17 @@ dotnet run --project VrcDmaFish.csproj -- --dump-objects 128 --debug --no-wizard
 - `GameObjectManagerPattern`：单条 GOM 特征码覆盖。
 - `GameObjectManagerPatterns`：多条 GOM 特征码候选，程序会按顺序尝试并自动校验对象链。
 - `GameObjectManagerAddress` / `TargetObjectAddress`：当自动扫描仍失效时，可直接手填地址绕过。
+- `TargetKlassAddress`：目标组件的 `Il2CppClass*` 地址；若由内部 Proxy 提供，扫描时会优先按 `component.klassPtr` 直接匹配。
 - `GameObjectManagerActiveNodesOffset`：`GameObjectManager.activeObjectNodes` 的 Native 偏移，默认 `0x28`。
 - `ObjectNodePreviousOffset` / `ObjectNodeNextOffset` / `ObjectNodeGameObjectOffset`：链表节点布局，默认分别为 `0x00 / 0x08 / 0x10`。
+- `GameObjectComponentArrayOffset` / `GameObjectComponentCountOffset`：`GameObject` 的组件数组指针和长度偏移，默认 `0x30 / 0x40`。
 - `GameObjectNamePointerOffset`：`GameObject.namePtr` 的 Native 偏移，默认 `0x60`。
+- `ComponentArrayElementStride` / `ComponentArrayElementComponentPointerOffset`：组件数组元素步长和组件指针偏移，默认 `0x10 / 0x08`。
+- `ComponentKlassPointerOffset` / `ComponentGameObjectOffset`：组件实例里的 `klassPtr` 和 `gameObject` 偏移，默认 `0x00 / 0x10`。
+- `Il2CppClassNamePointerOffset` / `Il2CppClassNamespacePointerOffset` / `Il2CppClassParentPointerOffset`：类元数据里的 `name` / `namespace` / `parent` 偏移，默认 `0x10 / 0x18 / 0x48`。
+- `MaxComponentCount`：组件数组安全阈值，默认 `1000`；只有在 `componentCount > 0 && componentCount < MaxComponentCount` 时才会继续遍历。
+- `MaxStringLength`：DMA 读取 UTF-8 字符串的最大长度，默认 `64`，用于防止坏指针把读取拖死。
+- `MaxClassParentDepth`：遍历 `Il2CppClass.parent` 链的最大深度，默认 `8`。
 
 偏移优先级如下：
 

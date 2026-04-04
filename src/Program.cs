@@ -313,9 +313,16 @@ public static class Program
 
         foreach (var entry in objects)
         {
+            var componentInfo = entry.DeclaredComponentCount > 0
+                ? $" components={entry.ValidComponentEntries}/{entry.DeclaredComponentCount}"
+                : string.Empty;
+            var componentSamples = string.IsNullOrWhiteSpace(entry.SampleComponentPointers)
+                ? string.Empty
+                : $" sampleComponents=[{entry.SampleComponentPointers}]";
+
             Logger.Info(
                 "对象",
-                $"name='{entry.Name}' gameObject=0x{entry.GameObjectAddress:X} node=0x{entry.NodeAddress:X} namePtr=0x{entry.NamePointer:X}");
+                $"name='{entry.Name}' gameObject=0x{entry.GameObjectAddress:X} node=0x{entry.NodeAddress:X} namePtr=0x{entry.NamePointer:X}{componentInfo}{componentSamples}");
         }
 
         return 0;

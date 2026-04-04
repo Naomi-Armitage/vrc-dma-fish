@@ -157,15 +157,24 @@ public sealed class UnityScanner
 
     public ulong FindObjectByName(string name)
     {
-        return FindObjectByName(name, 0, null);
+        return FindTargetObject(name, 0, 0, null);
     }
 
     public ulong FindObjectByName(string name, ulong gameObjectManagerAddress)
     {
-        return FindObjectByName(name, gameObjectManagerAddress, null);
+        return FindTargetObject(name, 0, gameObjectManagerAddress, null);
     }
 
     public ulong FindObjectByName(string name, ulong gameObjectManagerAddress, IReadOnlyList<string>? gameObjectManagerPatterns)
+    {
+        return FindTargetObject(name, 0, gameObjectManagerAddress, gameObjectManagerPatterns);
+    }
+
+    public ulong FindTargetObject(
+        string name,
+        ulong targetKlassAddress,
+        ulong gameObjectManagerAddress,
+        IReadOnlyList<string>? gameObjectManagerPatterns)
     {
         if (gameObjectManagerAddress == 0)
         {
@@ -187,7 +196,21 @@ public sealed class UnityScanner
             {
                 var namePtr = ReadUInt64(gameObject + _layout.GameObjectNamePointerOffset);
                 var objectName = ReadString(namePtr);
-                if (!string.IsNullOrWhiteSpace(objectName) &&
+
+                if (TryFindMatchingComponent(gameObject, name, targetKlassAddress, out var componentInfo))
+                {
+                    var matchSource = targetKlassAddress != 0 && componentInfo.KlassPointer == targetKlassAddress
+                        ? $"klass=0x{targetKlassAddress:X}"
+                        : $"class='{componentInfo.GetDisplayName()}'";
+                    var gameObjectLabel = string.IsNullOrWhiteSpace(objectName) ? "<unnamed>" : objectName;
+                    Logger.Info(
+                        "扫描",
+                        $"找到目标组件 {matchSource}，component=0x{componentInfo.ComponentPointer:X}，gameObject=0x{gameObject:X} ('{gameObjectLabel}')。");
+                    return componentInfo.ComponentPointer;
+                }
+
+                if (targetKlassAddress == 0 &&
+                    !string.IsNullOrWhiteSpace(objectName) &&
                     objectName.Contains(name, StringComparison.OrdinalIgnoreCase))
                 {
                     Logger.Info("扫描", $"找到对象 '{objectName}'，地址 0x{gameObject:X}。");
@@ -198,7 +221,15 @@ public sealed class UnityScanner
             currentNode = ReadUInt64(currentNode + _layout.ObjectNodeNextOffset);
         }
 
-        Logger.Warn("扫描", $"未找到 GameObject '{name}'。");
+        if (targetKlassAddress != 0)
+        {
+            Logger.Warn("扫描", $"未找到目标组件：klass=0x{targetKlassAddress:X}，name='{name}'。");
+        }
+        else
+        {
+            Logger.Warn("扫描", $"未找到 GameObject/Component '{name}'。");
+        }
+
         return 0;
     }
 
@@ -230,7 +261,16 @@ public sealed class UnityScanner
             {
                 var namePtr = ReadUInt64(gameObject + _layout.GameObjectNamePointerOffset);
                 var objectName = ReadString(namePtr);
-                objects.Add(new UnityObjectInfo(currentNode, gameObject, namePtr, objectName));
+                var componentSummary = ReadComponentSummary(gameObject);
+                objects.Add(
+                    new UnityObjectInfo(
+                        currentNode,
+                        gameObject,
+                        namePtr,
+                        objectName,
+                        componentSummary.DeclaredComponentCount,
+                        componentSummary.ValidComponentEntries,
+                        componentSummary.SampleComponentPointers));
             }
 
             currentNode = ReadUInt64(currentNode + _layout.ObjectNodeNextOffset);
@@ -449,6 +489,16 @@ public sealed class UnityScanner
 
             score += 2;
             samples.Add(objectName);
+            var componentSummary = ReadComponentSummary(gameObject);
+            if (componentSummary.IsCountPlausible)
+            {
+                score += 1;
+            }
+
+            if (componentSummary.ValidComponentEntries > 0)
+            {
+                score += 1;
+            }
 
             if (objectName.Contains("Fishing", StringComparison.OrdinalIgnoreCase) ||
                 objectName.Contains("VRChat", StringComparison.OrdinalIgnoreCase) ||
@@ -541,6 +591,178 @@ public sealed class UnityScanner
         return address is > 0x10000 and < 0x0000FFFFFFFFFFFF;
     }
 
+    private bool TryFindMatchingComponent(
+        ulong gameObjectAddress,
+        string targetName,
+        ulong targetKlassAddress,
+        out UnityComponentInfo componentInfo)
+    {
+        componentInfo = default;
+        var components = ReadComponents(gameObjectAddress, out _, out var isCountPlausible);
+        if (!isCountPlausible)
+        {
+            return false;
+        }
+
+        foreach (var component in components)
+        {
+            if (targetKlassAddress != 0 && component.KlassPointer == targetKlassAddress)
+            {
+                componentInfo = component;
+                return true;
+            }
+
+            if (IsTargetClassNameMatch(component, targetName))
+            {
+                componentInfo = component;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private ComponentSummary ReadComponentSummary(ulong gameObjectAddress)
+    {
+        var components = ReadComponents(gameObjectAddress, out var declaredComponentCount, out var isCountPlausible);
+        if (!isCountPlausible)
+        {
+            return declaredComponentCount <= 0
+                ? ComponentSummary.Invalid
+                : new ComponentSummary(declaredComponentCount, 0, string.Empty, false);
+        }
+
+        var samplePointers = components
+            .Take(3)
+            .Select(component => component.GetSampleLabel())
+            .ToArray();
+
+        return new ComponentSummary(
+            declaredComponentCount,
+            components.Count,
+            string.Join(", ", samplePointers),
+            true);
+    }
+
+    private List<UnityComponentInfo> ReadComponents(
+        ulong gameObjectAddress,
+        out int declaredComponentCount,
+        out bool isCountPlausible)
+    {
+        declaredComponentCount = 0;
+        isCountPlausible = false;
+
+        if (!TryReadUInt64(gameObjectAddress + _layout.GameObjectComponentArrayOffset, out var componentArray) ||
+            !IsLikelyPointer(componentArray))
+        {
+            return new List<UnityComponentInfo>();
+        }
+
+        if (!TryReadInt32(gameObjectAddress + _layout.GameObjectComponentCountOffset, out var componentCount))
+        {
+            return new List<UnityComponentInfo>();
+        }
+
+        declaredComponentCount = componentCount;
+        if (componentCount <= 0 || componentCount > _layout.MaxComponentCount)
+        {
+            return new List<UnityComponentInfo>();
+        }
+
+        isCountPlausible = true;
+        var components = new List<UnityComponentInfo>();
+        for (var i = 0; i < componentCount; i++)
+        {
+            var elementAddress = componentArray + ((ulong)i * _layout.ComponentArrayElementStride);
+            if (!TryReadUInt64(elementAddress + _layout.ComponentArrayElementComponentPointerOffset, out var componentPointer) ||
+                !IsLikelyPointer(componentPointer))
+            {
+                continue;
+            }
+
+            if (!TryReadUInt64(componentPointer + _layout.ComponentGameObjectOffset, out var ownerGameObject) ||
+                ownerGameObject != gameObjectAddress)
+            {
+                continue;
+            }
+
+            TryReadUInt64(componentPointer + _layout.ComponentKlassPointerOffset, out var klassPointer);
+            var classInfo = ReadIl2CppClassInfo(klassPointer);
+            components.Add(
+                new UnityComponentInfo(
+                    componentPointer,
+                    klassPointer,
+                    ownerGameObject,
+                    classInfo.Name,
+                    classInfo.Namespace,
+                    classInfo.IsMonoBehaviourDerived));
+        }
+
+        return components;
+    }
+
+    private UnityIl2CppClassInfo ReadIl2CppClassInfo(ulong klassPointer)
+    {
+        if (!IsLikelyPointer(klassPointer))
+        {
+            return UnityIl2CppClassInfo.Invalid;
+        }
+
+        TryReadUInt64(klassPointer + _layout.Il2CppClassNamePointerOffset, out var classNamePointer);
+        TryReadUInt64(klassPointer + _layout.Il2CppClassNamespacePointerOffset, out var namespacePointer);
+
+        var className = ReadString(classNamePointer);
+        var namespaceName = ReadString(namespacePointer);
+        var isMonoBehaviourDerived = IsMonoBehaviourDerived(klassPointer);
+
+        return new UnityIl2CppClassInfo(klassPointer, classNamePointer, namespacePointer, className, namespaceName, isMonoBehaviourDerived);
+    }
+
+    private bool IsMonoBehaviourDerived(ulong klassPointer)
+    {
+        var visited = new HashSet<ulong>();
+        var current = klassPointer;
+
+        for (var depth = 0; depth < _layout.MaxClassParentDepth && IsLikelyPointer(current) && visited.Add(current); depth++)
+        {
+            TryReadUInt64(current + _layout.Il2CppClassNamePointerOffset, out var namePointer);
+            TryReadUInt64(current + _layout.Il2CppClassNamespacePointerOffset, out var namespacePointer);
+            var className = ReadString(namePointer);
+            var namespaceName = ReadString(namespacePointer);
+
+            if (string.Equals(className, "MonoBehaviour", StringComparison.Ordinal) &&
+                string.Equals(namespaceName, "UnityEngine", StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            if (!TryReadUInt64(current + _layout.Il2CppClassParentPointerOffset, out current))
+            {
+                break;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsTargetClassNameMatch(UnityComponentInfo component, string targetName)
+    {
+        if (string.IsNullOrWhiteSpace(targetName))
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(component.ClassName) &&
+            component.ClassName.Contains(targetName, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var displayName = component.GetDisplayName();
+        return !string.IsNullOrWhiteSpace(displayName) &&
+               displayName.Contains(targetName, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static (byte[] PatternBytes, byte[] WildcardMask) ParsePattern(string pattern)
     {
         var tokens = pattern.Split(' ', StringSplitOptions.RemoveEmptyEntries);
@@ -581,6 +803,26 @@ public sealed class UnityScanner
         }
     }
 
+    private bool TryReadInt32(ulong address, out int value)
+    {
+        value = 0;
+        try
+        {
+            var bytes = _process.MemRead(address, 4, Vmm.FLAG_NOCACHE);
+            if (bytes.Length != 4)
+            {
+                return false;
+            }
+
+            value = BitConverter.ToInt32(bytes, 0);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private ulong ReadUInt64(ulong address)
     {
         return TryReadUInt64(address, out var value) ? value : 0;
@@ -595,7 +837,7 @@ public sealed class UnityScanner
 
         try
         {
-            return _process.MemReadString(Encoding.UTF8, address, 64, Vmm.FLAG_NOCACHE, true).TrimEnd('\0');
+            return _process.MemReadString(Encoding.UTF8, address, (uint)_layout.MaxStringLength, Vmm.FLAG_NOCACHE, true).TrimEnd('\0');
         }
         catch
         {
@@ -606,6 +848,26 @@ public sealed class UnityScanner
     private readonly record struct ModuleCandidate(string Name, ulong BaseAddress);
     private readonly record struct GameObjectManagerPatternSpec(string Name, string Pattern);
     private readonly record struct GameObjectManagerAddressCandidate(string Source, ulong Address);
+    private readonly record struct ComponentSummary(
+        int DeclaredComponentCount,
+        int ValidComponentEntries,
+        string SampleComponentPointers,
+        bool IsCountPlausible)
+    {
+        public static ComponentSummary Invalid { get; } = new(0, 0, string.Empty, false);
+    }
+
+    private readonly record struct UnityIl2CppClassInfo(
+        ulong KlassPointer,
+        ulong NamePointer,
+        ulong NamespacePointer,
+        string Name,
+        string Namespace,
+        bool IsMonoBehaviourDerived)
+    {
+        public static UnityIl2CppClassInfo Invalid { get; } = new(0, 0, 0, string.Empty, string.Empty, false);
+    }
+
     private readonly record struct GameObjectManagerValidationResult(
         bool IsValid,
         int Score,
@@ -632,4 +894,44 @@ public readonly record struct GameObjectManagerProbeResult(
     ulong? FirstNamePointer,
     string? FirstObjectName);
 
-public readonly record struct UnityObjectInfo(ulong NodeAddress, ulong GameObjectAddress, ulong NamePointer, string Name);
+public readonly record struct UnityObjectInfo(
+    ulong NodeAddress,
+    ulong GameObjectAddress,
+    ulong NamePointer,
+    string Name,
+    int DeclaredComponentCount,
+    int ValidComponentEntries,
+    string SampleComponentPointers);
+
+public readonly record struct UnityComponentInfo(
+    ulong ComponentPointer,
+    ulong KlassPointer,
+    ulong OwnerGameObject,
+    string ClassName,
+    string Namespace,
+    bool IsMonoBehaviourDerived)
+{
+    public string GetDisplayName()
+    {
+        if (string.IsNullOrWhiteSpace(ClassName))
+        {
+            return string.Empty;
+        }
+
+        return string.IsNullOrWhiteSpace(Namespace)
+            ? ClassName
+            : $"{Namespace}.{ClassName}";
+    }
+
+    public string GetSampleLabel()
+    {
+        var typeLabel = GetDisplayName();
+        var monoBehaviourSuffix = IsMonoBehaviourDerived ? "/MonoBehaviour" : string.Empty;
+        if (!string.IsNullOrWhiteSpace(typeLabel))
+        {
+            return $"{typeLabel}@0x{ComponentPointer:X}/klass=0x{KlassPointer:X}{monoBehaviourSuffix}";
+        }
+
+        return $"0x{ComponentPointer:X}/klass=0x{KlassPointer:X}{monoBehaviourSuffix}";
+    }
+}
