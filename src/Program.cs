@@ -472,10 +472,16 @@ public static class Program
         Console.WriteLine(
             $"    gameObject={FormatNullableHex(candidate.GameObjectAddress)} namePtr={FormatProbe(candidate.NamePointerLabel, candidate.NamePointerAddress, candidate.NamePointerValue)} objectName='{candidate.ObjectName}'");
 
+        if (candidate.TraversedNodeCount.HasValue || candidate.CoherentNodeCount.HasValue || candidate.BackLinkedNodeCount.HasValue)
+        {
+            Console.WriteLine(
+                $"    topology=traversed:{candidate.TraversedNodeCount ?? 0} coherent:{candidate.CoherentNodeCount ?? 0} backlinks:{candidate.BackLinkedNodeCount ?? 0}");
+        }
+
         if (candidate.DeclaredComponentCount.HasValue)
         {
             Console.WriteLine(
-                $"    components={candidate.ValidComponentEntries ?? 0}/{candidate.DeclaredComponentCount.Value} samples=[{candidate.SampleComponentPointers}]");
+                $"    components={candidate.ValidComponentEntries ?? 0}/{candidate.DeclaredComponentCount.Value} classTopology={candidate.PlausibleClassEntries ?? 0} monoDerived={candidate.MonoBehaviourDerivedEntries ?? 0} arrayOffset={FormatNullableHex(candidate.ComponentArrayOffset)} countOffset={FormatNullableHex(candidate.ComponentCountOffset)} samples=[{candidate.SampleComponentPointers}]");
         }
 
         if (!string.IsNullOrWhiteSpace(candidate.ValidationPath))

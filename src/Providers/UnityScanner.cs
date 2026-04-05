@@ -44,14 +44,19 @@ public sealed class UnityScanner
         _layout = layout;
     }
 
-    public ulong FindGameObjectManager(IReadOnlyList<string>? configuredPatterns = null)
+    public GameObjectManagerProbeResult? FindBestGameObjectManagerCandidate(IReadOnlyList<string>? configuredPatterns = null)
     {
         var candidates = ProbeGameObjectManagerCandidates(configuredPatterns, DefaultProbeResultLimit);
-        var bestCandidate = candidates
+        return candidates
             .Where(candidate => candidate.IsValid)
             .OrderByDescending(candidate => candidate.Score)
             .ThenBy(candidate => candidate.PrefilterRejected)
             .FirstOrDefault();
+    }
+
+    public ulong FindGameObjectManager(IReadOnlyList<string>? configuredPatterns = null)
+    {
+        var bestCandidate = FindBestGameObjectManagerCandidate(configuredPatterns);
 
         if (bestCandidate is not null)
         {
@@ -61,6 +66,7 @@ public sealed class UnityScanner
             return bestCandidate.ManagerAddress;
         }
 
+        var candidates = ProbeGameObjectManagerCandidates(configuredPatterns, DefaultProbeResultLimit);
         if (Logger.IsDebugEnabled)
         {
             foreach (var candidate in candidates.Take(16))
@@ -170,25 +176,20 @@ public sealed class UnityScanner
         ulong gameObjectManagerAddress,
         IReadOnlyList<string>? gameObjectManagerPatterns)
     {
-        if (gameObjectManagerAddress == 0)
-        {
-            gameObjectManagerAddress = FindGameObjectManager(gameObjectManagerPatterns);
-        }
-
-        if (gameObjectManagerAddress == 0)
+        if (!TryResolveTraversalPlan(gameObjectManagerAddress, gameObjectManagerPatterns, out var traversalPlan))
         {
             return 0;
         }
 
-        var currentNode = ReadUInt64(gameObjectManagerAddress + _layout.GameObjectManagerActiveNodesOffset);
+        var currentNode = traversalPlan.StartNodeAddress;
         var remainingNodes = 1024;
 
         while (currentNode != 0 && remainingNodes-- > 0)
         {
-            var gameObject = ReadUInt64(currentNode + _layout.ObjectNodeGameObjectOffset);
+            var gameObject = ReadUInt64(currentNode + traversalPlan.NodeGameObjectOffset);
             if (gameObject != 0)
             {
-                var namePtr = ReadUInt64(gameObject + _layout.GameObjectNamePointerOffset);
+                var namePtr = ReadUInt64(gameObject + traversalPlan.GameObjectNamePointerOffset);
                 var objectName = ReadString(namePtr);
 
                 if (TryFindMatchingComponent(gameObject, name, targetKlassAddress, out var componentInfo))
@@ -212,7 +213,7 @@ public sealed class UnityScanner
                 }
             }
 
-            currentNode = ReadUInt64(currentNode + _layout.ObjectNodeNextOffset);
+            currentNode = ReadUInt64(currentNode + traversalPlan.NodeNextOffset);
         }
 
         if (targetKlassAddress != 0)
@@ -234,26 +235,21 @@ public sealed class UnityScanner
             return Array.Empty<UnityObjectInfo>();
         }
 
-        if (gameObjectManagerAddress == 0)
-        {
-            gameObjectManagerAddress = FindGameObjectManager(gameObjectManagerPatterns);
-        }
-
-        if (gameObjectManagerAddress == 0)
+        if (!TryResolveTraversalPlan(gameObjectManagerAddress, gameObjectManagerPatterns, out var traversalPlan))
         {
             return Array.Empty<UnityObjectInfo>();
         }
 
         var objects = new List<UnityObjectInfo>();
-        var currentNode = ReadUInt64(gameObjectManagerAddress + _layout.GameObjectManagerActiveNodesOffset);
+        var currentNode = traversalPlan.StartNodeAddress;
         var remainingNodes = Math.Max(limit * 4, 256);
 
         while (currentNode != 0 && remainingNodes-- > 0 && objects.Count < limit)
         {
-            var gameObject = ReadUInt64(currentNode + _layout.ObjectNodeGameObjectOffset);
+            var gameObject = ReadUInt64(currentNode + traversalPlan.NodeGameObjectOffset);
             if (gameObject != 0)
             {
-                var namePtr = ReadUInt64(gameObject + _layout.GameObjectNamePointerOffset);
+                var namePtr = ReadUInt64(gameObject + traversalPlan.GameObjectNamePointerOffset);
                 var objectName = ReadString(namePtr);
                 var componentSummary = ReadComponentSummary(gameObject);
                 objects.Add(
@@ -267,11 +263,67 @@ public sealed class UnityScanner
                         componentSummary.SampleComponentPointers));
             }
 
-            currentNode = ReadUInt64(currentNode + _layout.ObjectNodeNextOffset);
+            currentNode = ReadUInt64(currentNode + traversalPlan.NodeNextOffset);
         }
 
         Logger.Debug("扫描", $"对象转储完成，共收集 {objects.Count} 个对象。");
         return objects;
+    }
+
+    private bool TryResolveTraversalPlan(
+        ulong configuredGameObjectManagerAddress,
+        IReadOnlyList<string>? gameObjectManagerPatterns,
+        out UnityObjectTraversalPlan traversalPlan)
+    {
+        if (configuredGameObjectManagerAddress != 0)
+        {
+            traversalPlan = CreateConfiguredTraversalPlan(configuredGameObjectManagerAddress);
+            return traversalPlan.StartNodeAddress != 0;
+        }
+
+        var bestCandidate = FindBestGameObjectManagerCandidate(gameObjectManagerPatterns);
+        if (bestCandidate is null)
+        {
+            traversalPlan = default;
+            return false;
+        }
+
+        traversalPlan = CreateTraversalPlan(bestCandidate);
+        return traversalPlan.StartNodeAddress != 0;
+    }
+
+    private UnityObjectTraversalPlan CreateConfiguredTraversalPlan(ulong managerBaseAddress)
+    {
+        var startNodeAddress = ReadUInt64(managerBaseAddress + _layout.GameObjectManagerActiveNodesOffset);
+        return new UnityObjectTraversalPlan(
+            managerBaseAddress,
+            "ConfiguredManagerBase",
+            startNodeAddress,
+            _layout.ObjectNodeNextOffset,
+            _layout.ObjectNodeGameObjectOffset,
+            _layout.GameObjectNamePointerOffset,
+            _layout.GameObjectComponentArrayOffset,
+            _layout.GameObjectComponentCountOffset);
+    }
+
+    private UnityObjectTraversalPlan CreateTraversalPlan(GameObjectManagerProbeResult candidate)
+    {
+        var interpretation = string.IsNullOrWhiteSpace(candidate.Interpretation)
+            ? "ManagerBase"
+            : candidate.Interpretation;
+        var startNodeAddress = string.Equals(interpretation, "NodePointer", StringComparison.OrdinalIgnoreCase)
+            ? candidate.ManagerAddress
+            : candidate.ManagerFieldValue ?? ReadUInt64(candidate.ManagerAddress + _layout.GameObjectManagerActiveNodesOffset);
+
+        return new UnityObjectTraversalPlan(
+            candidate.ManagerAddress,
+            interpretation,
+            startNodeAddress,
+            _layout.ObjectNodeNextOffset,
+            candidate.NodeFieldOffset ?? _layout.ObjectNodeGameObjectOffset,
+            candidate.NamePointerOffset ?? _layout.GameObjectNamePointerOffset,
+            candidate.ComponentArrayOffset ?? _layout.GameObjectComponentArrayOffset,
+            candidate.ComponentCountOffset ?? _layout.GameObjectComponentCountOffset);
     }
 
     private IReadOnlyList<ModuleCandidate> ResolveModules()
@@ -477,6 +529,13 @@ public sealed class UnityScanner
             ObjectName = bestAttempt.ObjectName,
             DeclaredComponentCount = bestAttempt.DeclaredComponentCount,
             ValidComponentEntries = bestAttempt.ValidComponentEntries,
+            PlausibleClassEntries = bestAttempt.PlausibleClassEntries,
+            MonoBehaviourDerivedEntries = bestAttempt.MonoBehaviourDerivedEntries,
+            ComponentArrayOffset = bestAttempt.ComponentArrayOffset,
+            ComponentCountOffset = bestAttempt.ComponentCountOffset,
+            TraversedNodeCount = bestAttempt.TraversedNodeCount,
+            CoherentNodeCount = bestAttempt.CoherentNodeCount,
+            BackLinkedNodeCount = bestAttempt.BackLinkedNodeCount,
             SampleComponentPointers = bestAttempt.SampleComponentPointers,
             Observations = attempts.SelectMany(attempt => attempt.Observations).ToArray(),
             ReplayMemoryBlocks = Array.Empty<RecordedMemoryBlock>(),
@@ -603,21 +662,34 @@ public sealed class UnityScanner
                 continue;
             }
 
+            var nodeTopology = InspectNodeTopology(nodeAddress, nodeGameObjectOffset, observations);
             var nameProbe = ProbeGameObjectName(gameObjectAddress, observations);
             var componentSummary = ReadComponentSummary(gameObjectAddress);
+            var hasSemanticComponentEvidence =
+                componentSummary.ValidComponentEntries > 0 ||
+                componentSummary.PlausibleClassEntries > 0 ||
+                componentSummary.MonoBehaviourDerivedEntries > 0;
+            var hasTopologyEvidence =
+                nodeTopology.CoherentNodeCount >= 2 ||
+                nodeTopology.BackLinkedNodeCount > 0;
 
-            var score = 2;
+            var score = 1;
             if (nextNodeValue == 0 || IsLikelyPointer(nextNodeValue))
             {
                 score += 1;
             }
 
-            if (nameProbe.NamePointerRead)
+            if (nodeTopology.CoherentNodeCount >= 2)
             {
-                score += 1;
+                score += 2;
             }
 
-            if (nameProbe.HasReadableName)
+            if (nodeTopology.BackLinkedNodeCount > 0)
+            {
+                score += 2;
+            }
+
+            if (nameProbe.NamePointerRead)
             {
                 score += 1;
             }
@@ -637,12 +709,22 @@ public sealed class UnityScanner
                 score += 1;
             }
 
-            var isValid = score >= 4 && (nameProbe.HasReadableName || componentSummary.IsCountPlausible);
-            var sampleNames = !string.IsNullOrWhiteSpace(nameProbe.ObjectName)
+            if (componentSummary.PlausibleClassEntries > 0)
+            {
+                score += 2;
+            }
+
+            if (componentSummary.MonoBehaviourDerivedEntries > 0)
+            {
+                score += 1;
+            }
+
+            var isValid = score >= 5 && (hasSemanticComponentEvidence || hasTopologyEvidence || nameProbe.HasPlausibleName);
+            var sampleNames = nameProbe.HasPlausibleName
                 ? nameProbe.ObjectName
                 : componentSummary.ValidComponentEntries > 0
                     ? $"components={componentSummary.ValidComponentEntries}/{componentSummary.DeclaredComponentCount}"
-                    : string.Empty;
+                    : nodeTopology.SampleNodes;
 
             var failureReason = isValid
                 ? string.Empty
@@ -651,6 +733,17 @@ public sealed class UnityScanner
                     : componentSummary.IsCountPlausible
                         ? "组件数组结构合理，但未读到可用对象名。"
                         : "GameObject 可读，但对象名和组件数组都不够可信。";
+
+            if (!isValid)
+            {
+                failureReason = hasTopologyEvidence
+                    ? "Node chain was readable, but GameObject/component semantics were too weak."
+                    : componentSummary.IsCountPlausible
+                        ? "Component array was readable, but node topology and class evidence were too weak."
+                        : !string.IsNullOrWhiteSpace(nameProbe.FailureReason)
+                            ? nameProbe.FailureReason
+                            : "GameObject pointer was readable, but topology, object name, and component structure all looked weak.";
+            }
 
             var validationPath = $"{managerFieldLabel} -> {nodeFieldLabel} -> {nameProbe.NamePointerLabel}";
             var attempt = new GomValidationAttempt(
@@ -677,6 +770,13 @@ public sealed class UnityScanner
                 nameProbe.ObjectName,
                 componentSummary.DeclaredComponentCount == 0 ? null : componentSummary.DeclaredComponentCount,
                 componentSummary.IsCountPlausible ? componentSummary.ValidComponentEntries : null,
+                componentSummary.IsCountPlausible ? componentSummary.PlausibleClassEntries : null,
+                componentSummary.IsCountPlausible ? componentSummary.MonoBehaviourDerivedEntries : null,
+                componentSummary.ComponentArrayOffset,
+                componentSummary.ComponentCountOffset,
+                nodeTopology.TraversedNodeCount,
+                nodeTopology.CoherentNodeCount,
+                nodeTopology.BackLinkedNodeCount,
                 componentSummary.SampleComponentPointers,
                 observations.ToArray());
 
@@ -684,6 +784,92 @@ public sealed class UnityScanner
         }
 
         return bestAttempt;
+    }
+
+    private NodeTopologySummary InspectNodeTopology(
+        ulong startNodeAddress,
+        ulong nodeGameObjectOffset,
+        List<GameObjectManagerProbeObservation> observations)
+    {
+        var traversedNodeCount = 0;
+        var coherentNodeCount = 0;
+        var backLinkedNodeCount = 0;
+        var samples = new List<string>();
+        var seenNodes = new HashSet<ulong>();
+        var currentNodeAddress = startNodeAddress;
+
+        while (currentNodeAddress != 0 && traversedNodeCount < 4 && seenNodes.Add(currentNodeAddress))
+        {
+            traversedNodeCount++;
+
+            var nextRead = TryReadUInt64(currentNodeAddress + _layout.ObjectNodeNextOffset, out var nextNodeAddress);
+            var prevRead = TryReadUInt64(currentNodeAddress + _layout.ObjectNodePreviousOffset, out var previousNodeAddress);
+            var gameObjectRead = TryReadUInt64(currentNodeAddress + nodeGameObjectOffset, out var currentGameObjectAddress);
+
+            var nextLooksValid = !nextRead || nextNodeAddress == 0 || IsLikelyPointer(nextNodeAddress);
+            var previousLooksValid = !prevRead || previousNodeAddress == 0 || IsLikelyPointer(previousNodeAddress);
+            var gameObjectLooksValid = gameObjectRead && IsLikelyPointer(currentGameObjectAddress);
+
+            if (nextLooksValid && previousLooksValid && gameObjectLooksValid)
+            {
+                coherentNodeCount++;
+            }
+
+            if (gameObjectLooksValid && samples.Count < 3)
+            {
+                samples.Add($"node=0x{currentNodeAddress:X} go=0x{currentGameObjectAddress:X}");
+            }
+
+            if (traversedNodeCount <= 2)
+            {
+                observations.Add(
+                    CreateObservation(
+                        "topology",
+                        $"topology.node[{traversedNodeCount}].prev",
+                        currentNodeAddress + _layout.ObjectNodePreviousOffset,
+                        prevRead ? previousNodeAddress : null,
+                        previousLooksValid,
+                        note: prevRead ? string.Empty : "read failed"));
+                observations.Add(
+                    CreateObservation(
+                        "topology",
+                        $"topology.node[{traversedNodeCount}].next",
+                        currentNodeAddress + _layout.ObjectNodeNextOffset,
+                        nextRead ? nextNodeAddress : null,
+                        nextLooksValid,
+                        note: nextRead ? string.Empty : "read failed"));
+            }
+
+            if (!nextRead || nextNodeAddress == 0 || !IsLikelyPointer(nextNodeAddress))
+            {
+                break;
+            }
+
+            if (TryReadUInt64(nextNodeAddress + _layout.ObjectNodePreviousOffset, out var nextPreviousNodeAddress) &&
+                nextPreviousNodeAddress == currentNodeAddress)
+            {
+                backLinkedNodeCount++;
+                if (backLinkedNodeCount <= 2)
+                {
+                    observations.Add(
+                        CreateObservation(
+                            "topology",
+                            $"topology.next[{backLinkedNodeCount}].prev",
+                            nextNodeAddress + _layout.ObjectNodePreviousOffset,
+                            nextPreviousNodeAddress,
+                            looksLikePointer: true,
+                            note: "backlink"));
+                }
+            }
+
+            currentNodeAddress = nextNodeAddress;
+        }
+
+        return new NodeTopologySummary(
+            traversedNodeCount,
+            coherentNodeCount,
+            backLinkedNodeCount,
+            string.Join(", ", samples));
     }
 
     private NameProbeResult ProbeGameObjectName(ulong gameObjectAddress, List<GameObjectManagerProbeObservation> observations)
@@ -758,24 +944,7 @@ public sealed class UnityScanner
 
     private ComponentSummary ReadComponentSummary(ulong gameObjectAddress)
     {
-        var components = ReadComponents(gameObjectAddress, out var declaredComponentCount, out var isCountPlausible);
-        if (!isCountPlausible)
-        {
-            return declaredComponentCount <= 0
-                ? ComponentSummary.Invalid
-                : new ComponentSummary(declaredComponentCount, 0, string.Empty, false);
-        }
-
-        var samplePointers = components
-            .Take(3)
-            .Select(component => component.GetSampleLabel())
-            .ToArray();
-
-        return new ComponentSummary(
-            declaredComponentCount,
-            components.Count,
-            string.Join(", ", samplePointers),
-            true);
+        return ReadComponentProbe(gameObjectAddress).Summary;
     }
 
     private List<UnityComponentInfo> ReadComponents(
@@ -783,28 +952,68 @@ public sealed class UnityScanner
         out int declaredComponentCount,
         out bool isCountPlausible)
     {
-        declaredComponentCount = 0;
-        isCountPlausible = false;
+        var probe = ReadComponentProbe(gameObjectAddress);
+        declaredComponentCount = probe.Summary.DeclaredComponentCount;
+        isCountPlausible = probe.Summary.IsCountPlausible;
+        return probe.Components;
+    }
 
-        if (!TryReadUInt64(gameObjectAddress + _layout.GameObjectComponentArrayOffset, out var componentArray) ||
+    private ComponentProbeResult ReadComponentProbe(ulong gameObjectAddress)
+    {
+        var best = ComponentProbeResult.Invalid;
+
+        foreach (var componentArrayOffset in GetGameObjectComponentArrayOffsets())
+        {
+            foreach (var componentCountOffset in GetGameObjectComponentCountOffsets())
+            {
+                if (componentArrayOffset == componentCountOffset)
+                {
+                    continue;
+                }
+
+                var probe = TryProbeComponents(gameObjectAddress, componentArrayOffset, componentCountOffset);
+                best = ChooseBetterComponentProbe(best, probe);
+            }
+        }
+
+        return best;
+    }
+
+    private ComponentProbeResult TryProbeComponents(
+        ulong gameObjectAddress,
+        ulong componentArrayOffset,
+        ulong componentCountOffset)
+    {
+        if (!TryReadUInt64(gameObjectAddress + componentArrayOffset, out var componentArray) ||
             !IsLikelyPointer(componentArray))
         {
-            return new List<UnityComponentInfo>();
+            return ComponentProbeResult.Invalid;
         }
 
-        if (!TryReadInt32(gameObjectAddress + _layout.GameObjectComponentCountOffset, out var componentCount))
+        if (!TryReadInt32(gameObjectAddress + componentCountOffset, out var componentCount))
         {
-            return new List<UnityComponentInfo>();
+            return ComponentProbeResult.Invalid;
         }
 
-        declaredComponentCount = componentCount;
         if (componentCount <= 0 || componentCount > _layout.MaxComponentCount)
         {
-            return new List<UnityComponentInfo>();
+            return new ComponentProbeResult(
+                new ComponentSummary(
+                    componentCount,
+                    0,
+                    0,
+                    0,
+                    string.Empty,
+                    false,
+                    componentArrayOffset,
+                    componentCountOffset),
+                new List<UnityComponentInfo>());
         }
 
-        isCountPlausible = true;
         var components = new List<UnityComponentInfo>();
+        var plausibleClassEntries = 0;
+        var monoBehaviourDerivedEntries = 0;
+
         for (var i = 0; i < componentCount; i++)
         {
             var elementAddress = componentArray + ((ulong)i * _layout.ComponentArrayElementStride);
@@ -822,6 +1031,16 @@ public sealed class UnityScanner
 
             TryReadUInt64(componentPointer + _layout.ComponentKlassPointerOffset, out var klassPointer);
             var classInfo = ReadIl2CppClassInfo(klassPointer);
+            if (classInfo.ClassTopologyIsPlausible)
+            {
+                plausibleClassEntries++;
+            }
+
+            if (classInfo.IsMonoBehaviourDerived)
+            {
+                monoBehaviourDerivedEntries++;
+            }
+
             components.Add(
                 new UnityComponentInfo(
                     componentPointer,
@@ -832,7 +1051,22 @@ public sealed class UnityScanner
                     classInfo.IsMonoBehaviourDerived));
         }
 
-        return components;
+        var samplePointers = components
+            .Take(3)
+            .Select(component => component.GetSampleLabel())
+            .ToArray();
+
+        return new ComponentProbeResult(
+            new ComponentSummary(
+                componentCount,
+                components.Count,
+                plausibleClassEntries,
+                monoBehaviourDerivedEntries,
+                string.Join(", ", samplePointers),
+                true,
+                componentArrayOffset,
+                componentCountOffset),
+            components);
     }
 
     private UnityIl2CppClassInfo ReadIl2CppClassInfo(ulong klassPointer)
@@ -847,27 +1081,42 @@ public sealed class UnityScanner
 
         var className = ReadString(classNamePointer);
         var namespaceName = ReadString(namespacePointer);
-        var isMonoBehaviourDerived = IsMonoBehaviourDerived(klassPointer);
+        var classTopology = InspectClassTopology(klassPointer);
 
-        return new UnityIl2CppClassInfo(klassPointer, classNamePointer, namespacePointer, className, namespaceName, isMonoBehaviourDerived);
+        return new UnityIl2CppClassInfo(
+            klassPointer,
+            classNamePointer,
+            namespacePointer,
+            className,
+            namespaceName,
+            classTopology.IsMonoBehaviourDerived,
+            classTopology.IsPlausible,
+            classTopology.ParentDepth);
     }
 
-    private bool IsMonoBehaviourDerived(ulong klassPointer)
+    private ClassTopologySummary InspectClassTopology(ulong klassPointer)
     {
         var visited = new HashSet<ulong>();
         var current = klassPointer;
+        var parentDepth = 0;
+        var readableNameCount = 0;
 
-        for (var depth = 0; depth < _layout.MaxClassParentDepth && IsLikelyPointer(current) && visited.Add(current); depth++)
+        for (; parentDepth < _layout.MaxClassParentDepth && IsLikelyPointer(current) && visited.Add(current); parentDepth++)
         {
             TryReadUInt64(current + _layout.Il2CppClassNamePointerOffset, out var namePointer);
             TryReadUInt64(current + _layout.Il2CppClassNamespacePointerOffset, out var namespacePointer);
             var className = ReadString(namePointer);
             var namespaceName = ReadString(namespacePointer);
 
+            if (!string.IsNullOrWhiteSpace(className))
+            {
+                readableNameCount++;
+            }
+
             if (string.Equals(className, "MonoBehaviour", StringComparison.Ordinal) &&
                 string.Equals(namespaceName, "UnityEngine", StringComparison.Ordinal))
             {
-                return true;
+                return new ClassTopologySummary(parentDepth + 1, readableNameCount, true, true);
             }
 
             if (!TryReadUInt64(current + _layout.Il2CppClassParentPointerOffset, out current))
@@ -876,7 +1125,8 @@ public sealed class UnityScanner
             }
         }
 
-        return false;
+        var isPlausible = parentDepth >= 1 && (readableNameCount > 0 || parentDepth >= 2);
+        return new ClassTopologySummary(parentDepth, readableNameCount, false, isPlausible);
     }
 
     private static bool IsTargetClassNameMatch(UnityComponentInfo component, string targetName)
@@ -920,6 +1170,12 @@ public sealed class UnityScanner
     private IReadOnlyList<ulong> GetNamePointerOffsets() =>
         GetUniqueOffsets(_layout.GameObjectNamePointerOffset, 0x60, 0x30);
 
+    private IReadOnlyList<ulong> GetGameObjectComponentArrayOffsets() =>
+        GetUniqueOffsets(_layout.GameObjectComponentArrayOffset, 0x28, 0x30, 0x38);
+
+    private IReadOnlyList<ulong> GetGameObjectComponentCountOffsets() =>
+        GetUniqueOffsets(_layout.GameObjectComponentCountOffset, 0x38, 0x40, 0x48);
+
     private static GomValidationAttempt ChooseBetterAttempt(GomValidationAttempt current, GomValidationAttempt candidate)
     {
         if (candidate.IsValid && !current.IsValid)
@@ -953,6 +1209,27 @@ public sealed class UnityScanner
         }
 
         if (candidate.NamePointerRead && !current.NamePointerRead)
+        {
+            return candidate;
+        }
+
+        return current;
+    }
+
+    private static ComponentProbeResult ChooseBetterComponentProbe(ComponentProbeResult current, ComponentProbeResult candidate)
+    {
+        if (candidate.Summary.IsSemanticEvidenceStrong && !current.Summary.IsSemanticEvidenceStrong)
+        {
+            return candidate;
+        }
+
+        if (candidate.Summary.IsSemanticEvidenceStrong == current.Summary.IsSemanticEvidenceStrong &&
+            candidate.Summary.SemanticScore > current.Summary.SemanticScore)
+        {
+            return candidate;
+        }
+
+        if (!current.Summary.IsCountPlausible && candidate.Summary.IsCountPlausible)
         {
             return candidate;
         }
@@ -1149,10 +1426,23 @@ public sealed class UnityScanner
     private readonly record struct ComponentSummary(
         int DeclaredComponentCount,
         int ValidComponentEntries,
+        int PlausibleClassEntries,
+        int MonoBehaviourDerivedEntries,
         string SampleComponentPointers,
-        bool IsCountPlausible)
+        bool IsCountPlausible,
+        ulong? ComponentArrayOffset,
+        ulong? ComponentCountOffset)
     {
-        public static ComponentSummary Invalid { get; } = new(0, 0, string.Empty, false);
+        public int SemanticScore => ValidComponentEntries + (PlausibleClassEntries * 2) + MonoBehaviourDerivedEntries;
+
+        public bool IsSemanticEvidenceStrong => PlausibleClassEntries > 0 || MonoBehaviourDerivedEntries > 0 || ValidComponentEntries > 0;
+
+        public static ComponentSummary Invalid { get; } = new(0, 0, 0, 0, string.Empty, false, null, null);
+    }
+
+    private readonly record struct ComponentProbeResult(ComponentSummary Summary, List<UnityComponentInfo> Components)
+    {
+        public static ComponentProbeResult Invalid { get; } = new(ComponentSummary.Invalid, new List<UnityComponentInfo>());
     }
 
     private readonly record struct UnityIl2CppClassInfo(
@@ -1161,10 +1451,34 @@ public sealed class UnityScanner
         ulong NamespacePointer,
         string Name,
         string Namespace,
-        bool IsMonoBehaviourDerived)
+        bool IsMonoBehaviourDerived,
+        bool ClassTopologyIsPlausible,
+        int ParentDepth)
     {
-        public static UnityIl2CppClassInfo Invalid { get; } = new(0, 0, 0, string.Empty, string.Empty, false);
+        public static UnityIl2CppClassInfo Invalid { get; } = new(0, 0, 0, string.Empty, string.Empty, false, false, 0);
     }
+
+    private readonly record struct ClassTopologySummary(
+        int ParentDepth,
+        int ReadableNameCount,
+        bool IsMonoBehaviourDerived,
+        bool IsPlausible);
+
+    private readonly record struct NodeTopologySummary(
+        int TraversedNodeCount,
+        int CoherentNodeCount,
+        int BackLinkedNodeCount,
+        string SampleNodes);
+
+    private readonly record struct UnityObjectTraversalPlan(
+        ulong SourceAddress,
+        string Interpretation,
+        ulong StartNodeAddress,
+        ulong NodeNextOffset,
+        ulong NodeGameObjectOffset,
+        ulong GameObjectNamePointerOffset,
+        ulong GameObjectComponentArrayOffset,
+        ulong GameObjectComponentCountOffset);
 
     private readonly record struct GomValidationAttempt(
         string Interpretation,
@@ -1190,6 +1504,13 @@ public sealed class UnityScanner
         string ObjectName,
         int? DeclaredComponentCount,
         int? ValidComponentEntries,
+        int? PlausibleClassEntries,
+        int? MonoBehaviourDerivedEntries,
+        ulong? ComponentArrayOffset,
+        ulong? ComponentCountOffset,
+        int? TraversedNodeCount,
+        int? CoherentNodeCount,
+        int? BackLinkedNodeCount,
         string SampleComponentPointers,
         GameObjectManagerProbeObservation[] Observations)
     {
@@ -1216,6 +1537,13 @@ public sealed class UnityScanner
                 null,
                 null,
                 string.Empty,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
                 null,
                 null,
                 string.Empty,
@@ -1304,6 +1632,20 @@ public sealed record GameObjectManagerProbeResult
     public int? DeclaredComponentCount { get; init; }
 
     public int? ValidComponentEntries { get; init; }
+
+    public int? PlausibleClassEntries { get; init; }
+
+    public int? MonoBehaviourDerivedEntries { get; init; }
+
+    public ulong? ComponentArrayOffset { get; init; }
+
+    public ulong? ComponentCountOffset { get; init; }
+
+    public int? TraversedNodeCount { get; init; }
+
+    public int? CoherentNodeCount { get; init; }
+
+    public int? BackLinkedNodeCount { get; init; }
 
     public string SampleComponentPointers { get; init; } = string.Empty;
 

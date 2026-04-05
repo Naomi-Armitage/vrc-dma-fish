@@ -57,14 +57,15 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
 
             Logger.Info("DMA", $"已连接到 {_memory.Name} (PID: {_memory.ProcessId})。");
 
-            if (!_config.TryGetTargetObjectAddress(out _targetObjectAddr))
+            if (!TryResolveConfiguredAddress(_config.TargetObjectAddress, out _targetObjectAddr, out var configuredTargetObjectDescription))
             {
                 var scanner = new UnityScanner(_memory, _config.GetUnityNativeLayout());
                 var gameObjectManagerAddress = 0UL;
                 _config.TryGetTargetKlassAddress(out var targetKlassAddress);
-                if (_config.TryGetGameObjectManagerAddress(out var configuredGameObjectManagerAddress))
+                if (TryResolveConfiguredAddress(_config.GameObjectManagerAddress, out var configuredGameObjectManagerAddress, out var configuredGameObjectManagerDescription))
                 {
                     gameObjectManagerAddress = configuredGameObjectManagerAddress;
+                    Logger.Debug("DMA", $"GameObjectManager address source: {configuredGameObjectManagerDescription}");
                     Logger.Info("DMA", $"使用配置中的 GameObjectManager 地址 0x{gameObjectManagerAddress:X}。");
                 }
 
@@ -555,7 +556,7 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
             return 0;
         }
 
-        if (_config.TryGetGameObjectManagerAddress(out var configuredAddress))
+        if (TryResolveConfiguredAddress(_config.GameObjectManagerAddress, out var configuredAddress, out _))
         {
             return configuredAddress;
         }
@@ -572,7 +573,9 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
         }
 
         var scanner = new UnityScanner(_memory, _config.GetUnityNativeLayout());
-        var gameObjectManagerAddress = ResolveGameObjectManagerAddress();
+        var gameObjectManagerAddress = TryResolveConfiguredAddress(_config.GameObjectManagerAddress, out var configuredAddress, out _)
+            ? configuredAddress
+            : 0;
         Logger.Debug("DMA", $"对象转储使用的 GameObjectManager 地址 0x{gameObjectManagerAddress:X}。");
         return scanner.DumpObjects(limit, gameObjectManagerAddress, _config.GetGameObjectManagerPatternCandidates());
     }
@@ -586,5 +589,63 @@ public sealed class DmaProvider : IFishSignalSource, IDisposable
 
         var scanner = new UnityScanner(_memory, _config.GetUnityNativeLayout());
         return scanner.ProbeGameObjectManagerCandidates(_config.GetGameObjectManagerPatternCandidates(), limit, includeReplayData);
+    }
+
+    private bool TryResolveConfiguredAddress(string? value, out ulong address, out string sourceDescription)
+    {
+        address = 0;
+        sourceDescription = string.Empty;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        var trimmed = value.Trim();
+        if (TryParseAbsoluteAddress(trimmed, out address))
+        {
+            sourceDescription = "absolute";
+            return true;
+        }
+
+        if (_memory is null)
+        {
+            return false;
+        }
+
+        var plusIndex = trimmed.IndexOf('+');
+        if (plusIndex <= 0 || plusIndex >= trimmed.Length - 1)
+        {
+            return false;
+        }
+
+        var moduleName = trimmed[..plusIndex].Trim();
+        var offsetText = trimmed[(plusIndex + 1)..].Trim();
+        if (string.IsNullOrWhiteSpace(moduleName) ||
+            string.IsNullOrWhiteSpace(offsetText) ||
+            !TryParseAbsoluteAddress(offsetText, out var offset))
+        {
+            return false;
+        }
+
+        var moduleBase = _memory.GetModuleBase(moduleName);
+        if (moduleBase == 0)
+        {
+            return false;
+        }
+
+        address = moduleBase + offset;
+        sourceDescription = $"{moduleName}+0x{offset:X}";
+        return true;
+    }
+
+    private static bool TryParseAbsoluteAddress(string value, out ulong address)
+    {
+        address = 0;
+        if (value.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+        {
+            return ulong.TryParse(value[2..], System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out address);
+        }
+
+        return ulong.TryParse(value, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out address);
     }
 }

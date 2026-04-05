@@ -127,7 +127,7 @@ dotnet run --project VrcDmaFish.csproj -- --validate-gom-candidate .\logs\gom-ca
 - 或 `BarTopOffset` 与 `BarBottomOffset`
 - `GameObjectManagerPattern`：单条 GOM 特征码覆盖。
 - `GameObjectManagerPatterns`：多条 GOM 特征码候选，程序会按顺序尝试并自动校验对象链。
-- `GameObjectManagerAddress` / `TargetObjectAddress`：当自动扫描仍失效时，可直接手填地址绕过。
+- `GameObjectManagerAddress` / `TargetObjectAddress`：当自动扫描仍失效时，可直接手填地址绕过；支持绝对地址 `0x1234...`，也支持模块相对写法，例如 `GameAssembly.dll+0x1A2B3C`。
 - `TargetKlassAddress`：目标组件的 `Il2CppClass*` 地址；若由内部 Proxy 提供，扫描时会优先按 `component.klassPtr` 直接匹配。
 - `GameObjectManagerActiveNodesOffset`：`GameObjectManager.activeObjectNodes` 的 Native 偏移，默认 `0x28`。
 - `ObjectNodePreviousOffset` / `ObjectNodeNextOffset` / `ObjectNodeGameObjectOffset`：链表节点布局，默认分别为 `0x00 / 0x08 / 0x10`。
