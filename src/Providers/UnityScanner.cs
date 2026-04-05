@@ -155,6 +155,22 @@ public sealed class UnityScanner
         return scanner.ValidateCandidate(CreateDescriptor(candidate));
     }
 
+    public GameObjectManagerProbeResult ProbeSpecificGameObjectManagerCandidate(ulong candidateAddress, string candidateSource = "configured")
+    {
+        var prefilter = EvaluateCandidateSeed(candidateAddress);
+        var descriptor = new GameObjectManagerCandidateDescriptor(
+            "Configured",
+            0,
+            "Configured",
+            0,
+            0,
+            candidateSource,
+            candidateAddress,
+            prefilter.Rejected,
+            prefilter.Reason);
+        return ValidateCandidate(descriptor);
+    }
+
     public ulong FindObjectByName(string name)
     {
         return FindTargetObject(name, 0, 0, null);
@@ -277,6 +293,13 @@ public sealed class UnityScanner
     {
         if (configuredGameObjectManagerAddress != 0)
         {
+            var configuredCandidate = ProbeSpecificGameObjectManagerCandidate(configuredGameObjectManagerAddress);
+            traversalPlan = CreateTraversalPlan(configuredCandidate);
+            if (traversalPlan.StartNodeAddress != 0)
+            {
+                return true;
+            }
+
             traversalPlan = CreateConfiguredTraversalPlan(configuredGameObjectManagerAddress);
             return traversalPlan.StartNodeAddress != 0;
         }
@@ -429,6 +452,7 @@ public sealed class UnityScanner
             var prefilter = EvaluateCandidateSeed(entry.Address);
             yield return new GameObjectManagerCandidateDescriptor(
                 module.Name,
+                module.BaseAddress,
                 patternSpec.Name,
                 instructionAddress,
                 ripTarget,
@@ -499,6 +523,7 @@ public sealed class UnityScanner
         {
             Layout = _layout,
             ModuleName = descriptor.ModuleName,
+            ModuleBaseAddress = descriptor.ModuleBaseAddress,
             PatternName = descriptor.PatternName,
             InstructionAddress = descriptor.InstructionAddress,
             RipTargetAddress = descriptor.RipTargetAddress,
@@ -1387,6 +1412,7 @@ public sealed class UnityScanner
     private static GameObjectManagerCandidateDescriptor CreateDescriptor(GameObjectManagerProbeResult candidate) =>
         new(
             candidate.ModuleName,
+            candidate.ModuleBaseAddress,
             candidate.PatternName,
             candidate.InstructionAddress,
             candidate.RipTargetAddress,
@@ -1399,6 +1425,7 @@ public sealed class UnityScanner
     private readonly record struct GameObjectManagerPatternSpec(string Name, string Pattern);
     private readonly record struct GameObjectManagerCandidateDescriptor(
         string ModuleName,
+        ulong ModuleBaseAddress,
         string PatternName,
         ulong InstructionAddress,
         ulong RipTargetAddress,
@@ -1572,6 +1599,8 @@ public sealed record GameObjectManagerProbeResult
     public UnityNativeLayout Layout { get; init; } = UnityNativeLayout.Default;
 
     public string ModuleName { get; init; } = string.Empty;
+
+    public ulong ModuleBaseAddress { get; init; }
 
     public string PatternName { get; init; } = string.Empty;
 

@@ -466,6 +466,12 @@ public static class Program
     {
         Console.WriteLine(
             $"[{index}] module={candidate.ModuleName} pattern={candidate.PatternName} hit=0x{candidate.InstructionAddress:X} source={candidate.CandidateSource} candidate=0x{candidate.ManagerAddress:X} valid={candidate.IsValid} score={candidate.Score} interpretation={candidate.Interpretation}");
+        var hitRelative = FormatModuleRelative(candidate.ModuleName, candidate.ModuleBaseAddress, candidate.InstructionAddress);
+        var candidateRelative = FormatModuleRelative(candidate.ModuleName, candidate.ModuleBaseAddress, candidate.ManagerAddress);
+        if (!string.IsNullOrWhiteSpace(hitRelative) || !string.IsNullOrWhiteSpace(candidateRelative))
+        {
+            Console.WriteLine($"    relative hit={hitRelative} candidate={candidateRelative} config='{candidateRelative}'");
+        }
         Console.WriteLine($"    prefilter={(candidate.PrefilterRejected ? candidate.PrefilterReason : "ok")}");
         Console.WriteLine(
             $"    manager={FormatProbe(candidate.ManagerFieldLabel, candidate.ManagerFieldAddress, candidate.ManagerFieldValue)} node={FormatProbe(candidate.NodeFieldLabel, candidate.NodeFieldAddress, candidate.NodeFieldValue)} next={FormatNullableHex(candidate.NextNodeValue)}");
@@ -512,6 +518,16 @@ public static class Program
     }
 
     private static string FormatNullableHex(ulong? value) => value.HasValue ? $"0x{value.Value:X}" : "<n/a>";
+
+    private static string FormatModuleRelative(string moduleName, ulong moduleBaseAddress, ulong absoluteAddress)
+    {
+        if (string.IsNullOrWhiteSpace(moduleName) || moduleBaseAddress == 0 || absoluteAddress < moduleBaseAddress)
+        {
+            return string.Empty;
+        }
+
+        return $"{moduleName}+0x{absoluteAddress - moduleBaseAddress:X}";
+    }
 
     private static DashboardSessionWriter? TryStartDashboardWindow()
     {
